@@ -44,7 +44,9 @@ flowchart LR
 - **Host / device boundary.** A host `LinkableModule` MUST NOT reference CUDA or
   CuTe symbols or types. A CUDA `LinkableModule` owns the kernels and their
   C-ABI launchers. The host module invokes device code only through that
-  C-ABI launcher.
+  C-ABI launcher. The launcher MUST read the launch status right after the
+  launch and, when the device refuses the launch, throw naming the kernel and
+  the CUDA error, so a refused launch never returns as though the kernel ran.
 
 The target-specific generator behavior — how a CPU vs CUDA function emits,
 program-shape / dynamic-CTA accessors, and the `ShardLayout` runtime mapping —

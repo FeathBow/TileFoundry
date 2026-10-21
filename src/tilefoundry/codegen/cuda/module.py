@@ -75,7 +75,10 @@ def _define_kernel(fn: ModuleFunction, kernel: CallableSignature, ctx: CudaCodeg
 def _define_launcher(
     launcher: CallableSignature, kernel: CallableSignature, ctx: CudaCodegenContext
 ) -> None:
-    """The ``extern "C"`` entry: the geometry it was handed, spent on one launch."""
+    """The ``extern "C"`` entry: the geometry it was handed, spent on one launch.
+
+    A launch the device refuses throws, so the caller never reads outputs the kernel did not write.
+    """
     ctx.emit(f'extern "C" void {launcher.name}({ctx.parameters(launcher, exported=True)}) {{')
     ctx.indent()
     _tell_the_block(launcher, ctx)
@@ -83,6 +86,14 @@ def _define_launcher(
     ctx.emit(f"dim3 grid({grid_x}, 1, 1);")
     ctx.emit(f"dim3 block({block_x}, 1, 1);")
     ctx.emit(f"{kernel.name}<<<grid, block, {smem}, nullptr>>>({kernel_arguments(kernel, ctx)});")
+    ctx.emit("if (cudaError_t status = cudaGetLastError(); status != cudaSuccess) {")
+    ctx.indent()
+    ctx.emit(
+        f'throw std::runtime_error(std::string("tilefoundry: launch of {kernel.name} failed: ") '
+        "+ cudaGetErrorString(status));"
+    )
+    ctx.dedent()
+    ctx.emit("}")
     ctx.dedent()
     ctx.emit("}")
 
