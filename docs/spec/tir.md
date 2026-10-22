@@ -1269,6 +1269,7 @@ class CopyAsyncBulk(Op):
     transferred bytes is the implementation's, issued on the same instruction as
     the copy; a caller pairing this with its own `MBarrierArriveExpectTx` would
     be declaring a count the op already knows.
+  - It requires the target's `cp.async.bulk` capability.
   - Lowers to `tilefoundry::ops::copy_async_bulk(src, dst, bar)`
     ([runtime §2.6](./runtime.md#26-cudaops)). `barrier` is a tensor here
     because that is what TIR names a piece of shared memory with, and a word to
@@ -1296,9 +1297,9 @@ class CopyAsyncTensor(Op):
   - Both ends walk the same tile modes. The execution mesh is one aligned warp,
     preceded by zero or more size-one modes with arbitrary strides. The whole
     matched layout MUST be forward and injective; its offset is a multiple of 32.
-  - The declaration requires the target's `tma` capability. CUDA codegen MUST
-    reject it until host-encoded tensor-map construction exists; this stage
-    does not silently lower it to another copy instruction.
+  - The declaration requires the target's `cp.async.bulk.tensor` capability.
+    CUDA codegen MUST reject it until host-encoded tensor-map construction
+    exists; this stage does not silently lower it to another copy instruction.
 
 ##### LdMatrix
 
@@ -1314,7 +1315,7 @@ class LdMatrix(Op):
     register A fragment declared by `T.cuda.sm80.Mma()`; their dtype and shape
     agree under the ordinary `Copy` verifier.
   - One canonical SM80 warp issues the operation. It requires the target's
-    `tensor_core` capability and lowers to `tilefoundry::ops::ldmatrix`.
+    `ldmatrix` capability and lowers to `tilefoundry::ops::ldmatrix`.
   - The destination layout is the atom's declaration.
 
 #### Barrier object Ops (`tir.sync.mbarrier_*`)
@@ -1389,6 +1390,7 @@ class MBarrierArriveExpectTx(Op):
   - This is not paired with a `CopyAsyncBulk`, which declares its own bytes on the
     instruction that issues the copy. It belongs to a producer issuing one
     itself.
+  - It requires the target's `mbarrier.expect_tx` capability.
   - Lowers to `mbarrier.arrive.expect_tx.shared::cta.b64`, with the arrival
     token discarded: consumers wait on the phase parity, not on a token handed
     between threads. The runtime publishes no entry for it; `ops::copy_async_bulk`
@@ -1413,6 +1415,7 @@ class MBarrierWaitParity(Op):
   - The parity alternates `0, 1, 0, ...` across successive completions, which is
     what lets a fixed ring of barriers serve a pipeline of any length: stage `t`
     of a ring of `n` waits on parity `(t // n) & 1`.
+  - It requires the target's `mbarrier.try_wait` capability.
   - Lowers to a single `mbarrier.try_wait.parity.shared::cta.b64` under a **C++**
     loop, not a PTX one: a label inside inline asm is emitted once per
     instantiation and collides as soon as two of them land in one translation

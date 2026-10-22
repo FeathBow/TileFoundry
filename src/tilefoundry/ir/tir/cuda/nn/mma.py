@@ -98,13 +98,7 @@ def _eval_scheduled_mma(ctx):
 
 @register_verify_stmt(TiledMma)
 def verify_mma(call: "Call", ctx: "VerifyContext") -> None:
-    """Check target capability and operand shapes/dtypes after shared admission."""
-    op = call.target
-    atom = op.atom
-    if ctx.module is not None and ctx.module is not None:
-        capabilities = ctx.target.architecture.capabilities
-        if atom.capability not in capabilities:
-            ctx.error(call, f"target does not support {atom.capability}")
+    """Check operand shapes and dtypes after shared admission, which checks the capability."""
     verify_operand_shapes(call, ctx)
 
 
