@@ -17,6 +17,7 @@ import torch
 import tilefoundry
 import tilefoundry.codegen.cuda  # noqa: F401 — trigger emitter autodiscovery
 from tests.fixtures.tir.async_sync import AsyncStage
+from tests.ops.tir.targets import CUDA_TARGETS, retarget
 from tilefoundry.ir.core import Var, VerifyError
 from tilefoundry.ir.tir.async_copy import CopyAsync, CpAsyncWait
 from tilefoundry.ir.tir.prim_function import PrimFunction
@@ -99,12 +100,13 @@ def test_verify_rejects_what_the_instruction_cannot_do(stated, refusal) -> None:
         verify_prim_function(stated)
 
 
+@pytest.mark.parametrize("target", CUDA_TARGETS)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_async_copy_stage_matches_input() -> None:
+def test_async_copy_stage_matches_input(target: CudaTarget) -> None:
     torch.manual_seed(3)
     source = torch.randn(128, 4, dtype=torch.float32, device="cuda")
     out = torch.empty_like(source)
-    runtime = tilefoundry.compile(AsyncStage, target=CudaTarget("nvidia.h200_sxm"))
+    runtime = tilefoundry.compile(retarget(AsyncStage, target), target=target)
     runtime(source, out)
     torch.cuda.synchronize()
     torch.testing.assert_close(out, source, rtol=0, atol=0)

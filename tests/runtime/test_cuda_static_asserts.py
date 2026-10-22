@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tilefoundry.target import CudaTarget
+
 _ROOT = Path(__file__).resolve().parents[2]
 _SOURCE = Path(__file__).resolve().parent / "cuda" / "static_asserts.cu"
 
@@ -49,13 +51,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _compile(case: int) -> subprocess.CompletedProcess:
-    """Compile the one translation unit at ``-DCASE=case``."""
+def _compile(case: int, arch: str = "sm_90a") -> subprocess.CompletedProcess:
+    """Compile the one translation unit at ``-DCASE=case`` for *arch*."""
     return subprocess.run(
         [
             "nvcc",
             "-std=c++20",
-            "-arch=sm_90a",
+            f"-arch={arch}",
             f"-DCASE={case}",
             *_INCLUDES,
             "-c",
@@ -69,9 +71,15 @@ def _compile(case: int) -> subprocess.CompletedProcess:
     )
 
 
-def test_the_corrected_arithmetic_still_compiles() -> None:
-    """The positive control, so that failing everywhere cannot read as passing."""
-    proc = _compile(0)
+@pytest.mark.parametrize("arch", ["sm_90a", CudaTarget("nvidia.rtx_6000_ada").arch])
+def test_the_corrected_arithmetic_still_compiles(arch: str) -> None:
+    """The positive control, so that failing everywhere cannot read as passing.
+
+    On sm_89 it also shows the runtime headers compile for an architecture
+    without the sm_90 instructions they hold in templates this unit leaves
+    uninstantiated.
+    """
+    proc = _compile(0, arch)
     assert proc.returncode == 0, proc.stderr
 
 

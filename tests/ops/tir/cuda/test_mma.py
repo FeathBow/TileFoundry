@@ -11,6 +11,7 @@ import torch
 import tilefoundry
 import tilefoundry.codegen.cuda  # noqa: F401 -- trigger emitter autodiscovery
 from tests.fixtures.tir.mma import MmHandwritten
+from tests.ops.tir.targets import CUDA_TARGETS, retarget
 from tilefoundry.dsl import *
 from tilefoundry.ir.types.shard_layout import Broadcast
 from tilefoundry.target import CpuTarget, CudaTarget
@@ -19,13 +20,14 @@ _CUDA = CudaTarget("nvidia.h200_sxm")
 _MESH_LAYOUT = Layout(shape=(4, 8), strides=(1, 4))
 
 
+@pytest.mark.parametrize("target", CUDA_TARGETS)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_handwritten_mma_matches_torch() -> None:
+def test_handwritten_mma_matches_torch(target: CudaTarget) -> None:
     torch.manual_seed(2)
     a = torch.randn(16, 16, dtype=torch.bfloat16, device="cuda")
     b = torch.randn(16, 8, dtype=torch.bfloat16, device="cuda")
     out = torch.empty(16, 8, dtype=torch.float32, device="cuda")
-    runtime = tilefoundry.compile(MmHandwritten, target=CudaTarget("nvidia.h200_sxm"))
+    runtime = tilefoundry.compile(retarget(MmHandwritten, target), target=target)
     runtime(a, b, out)
     torch.cuda.synchronize()
     torch.testing.assert_close(out, torch.matmul(a.float(), b.float()), rtol=2e-2, atol=2e-2)
@@ -137,9 +139,10 @@ class MmaTile:
         launch(tile_device, a, b, c, grid=(1, 1, 1), block=(32, 1, 1))  # noqa: F821
 
 
+@pytest.mark.parametrize("target", CUDA_TARGETS)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_fragment_mma_matches_torch_matmul() -> None:
-    rm = tilefoundry.compile(MmaTile, target=_CUDA)
+def test_fragment_mma_matches_torch_matmul(target: CudaTarget) -> None:
+    rm = tilefoundry.compile(retarget(MmaTile, target), target=target)
     torch.manual_seed(0)
     a = torch.randn(256, dtype=torch.bfloat16, device="cuda")
     b = torch.randn(128, dtype=torch.bfloat16, device="cuda")

@@ -36,8 +36,10 @@ from tilefoundry.target.hardware import (
     parse_document,
 )
 
+_SM89 = "nvidia.sm89"
 _SM90 = "nvidia.sm90"
 _SM100 = "nvidia.sm100"
+_RTX_6000_ADA = "nvidia.rtx_6000_ada"
 _H200 = "nvidia.h200_sxm"
 _B200 = "nvidia.b200_sxm"
 _EXTERNAL_HARDWARE = Path(__file__).parents[1] / "installed" / "smoke_target" / "hw"
@@ -403,6 +405,11 @@ def test_architecture_bandwidth_evidence_distinguishes_known_from_unavailable() 
     assert unavailable.conditions
 
     owners = {
+        _SM89: {
+            "memory.shared.owner": "cta",
+            "memory.register.owner": "thread",
+            "memory.tensor.owner": "cta",
+        },
         _SM90: {
             "memory.shared.owner": "cta",
             "memory.register.owner": "thread",
@@ -413,6 +420,7 @@ def test_architecture_bandwidth_evidence_distinguishes_known_from_unavailable() 
             "memory.register.owner": "thread",
             "memory.tensor.owner": "cta",
         },
+        _RTX_6000_ADA: {"memory.hbm.owner": "target"},
         _H200: {"memory.hbm.owner": "target"},
         _B200: {"memory.hbm.owner": "target"},
         "apple.amx": {"register.owner": "amx"},
@@ -430,7 +438,7 @@ def test_architecture_bandwidth_evidence_distinguishes_known_from_unavailable() 
 
 def test_cuda_sm_clocks_are_the_typed_floor_of_existing_device_facts() -> None:
     """The clock fact extracts an existing derivation instead of repeating it."""
-    for device_id in (_H200, _B200):
+    for device_id in (_RTX_6000_ADA, _H200, _B200):
         target = CudaTarget(device_id)
         document = CudaTarget.hardware.documents()[device_id]
         peak = document.fact("throughput.f32").value
@@ -442,7 +450,7 @@ def test_cuda_sm_clocks_are_the_typed_floor_of_existing_device_facts() -> None:
         stated = document.fact("compute.sm_clock_hz")
         assert (stated.value, stated.unit, stated.origin) == (clock, "Hz", "derived")
         assert stated.source
-        assert f"{peak // 1_000_000_000_000}e12 FLOP/s" in stated.conditions
+        assert f"{peak / 1e12:g}e12 FLOP/s" in stated.conditions
         assert f"{target.device.sm_count} SM * 128 FP32 results/clock/SM" in stated.conditions
         assert "* 2 FLOP/result" in stated.conditions
 

@@ -330,9 +330,9 @@ class CudaArchitecture(Architecture):
   - One value type MUST answer for every CUDA architecture, and a concrete value
     MUST be immutable. What separates one architecture from another is what its
     installed document records ([§4.1.1](#411-sm90),
-    [§4.1.2](#412-sm100)), so an architecture MUST NOT be given a type of its
-    own: a class holding no number would restate an identity the value already
-    carries.
+    [§4.1.2](#412-sm100), [§4.1.3](#413-sm89)), so an architecture MUST NOT be
+    given a type of its own: a class holding no number would restate an
+    identity the value already carries.
   - `name` MUST be the architecture identity CUDA compilation uses.
   - A CUDA architecture MUST own supported compute DTypes, instruction
     capabilities, and the thread/CTA structural limits. `capabilities` MUST use
@@ -393,6 +393,20 @@ The installed `nvidia.sm100` architecture document.
     MUST name the MMA family that accumulates there rather than the SM90 family,
     which this architecture does not run.
 
+#### 4.1.3 SM89
+
+The installed `nvidia.sm89` architecture document.
+
+- constraints:
+  - Its recorded identity MUST be `sm_89`.
+  - Its instruction capabilities MUST NOT name `wgmma.mma_async` or
+    `cp.async.bulk.tensor`: this architecture runs neither, so its MMA is
+    `mma.sync` and its copy from global to shared memory is `cp.async`.
+  - Storage and scale DTypes `f4e2m1` and `f8e8m0` MUST NOT be recorded as
+    compute DTypes.
+  - It MUST record no tensor-memory capacity: `mma.sync` accumulates in the
+    register file, so there is no separate store to size.
+
 ### 4.2 `CudaDevice`
 
 ```python
@@ -419,7 +433,8 @@ class CudaDevice(Device):
 - constraints:
   - One value type MUST answer for every CUDA device, on the same terms as the
     architecture ([§4.1](#41-cudaarchitecture)): a product is its document
-    ([§4.2.1](#421-h200sxm), [§4.2.2](#422-b200sxm)), not a type.
+    ([§4.2.1](#421-h200sxm), [§4.2.2](#422-b200sxm),
+    [§4.2.3](#423-rtx-6000-ada)), not a type.
   - A concrete value MUST be immutable, MUST describe one device, and MUST NOT
     carry a GPU count.
   - It MUST describe how many SMs the product has and how its memory system and
@@ -452,7 +467,10 @@ class CudaDevice(Device):
     value for it. A recorded absence and a number are both statements about the
     product; a substituted figure would not be.
   - `gmem_owner` MUST be `target`: all execution units of this single-device
-    Target share one HBM allocation.
+    Target share one global-memory allocation.
+  - The `memory.hbm.*` facts and the `hbm_*` fields describe the device's
+    global memory whatever its technology. A product whose global memory is not
+    HBM records its figures there and names the technology in `conditions`.
   - No field MAY carry a default, and no resource value MAY be written as a
     Python literal: the installed document is the single source
     ([§10](#10-installed-hardware-resources)). Selecting a different installed
@@ -503,6 +521,25 @@ The installed `nvidia.b200_sxm` device document.
   - `compute.sm_clock_hz` MUST be the floor of
     `75e12 / (148 SM * 128 results/clock * 2 FLOP/result)`, using the dense
     `throughput.f32` and `compute.sm_count` already recorded by the document.
+
+#### 4.2.3 RTX 6000 Ada
+
+The installed `nvidia.rtx_6000_ada` device document.
+
+- constraints:
+  - Its recorded identity MUST be `rtx_6000_ada`, and it MUST declare
+    `nvidia.sm89` as the architecture it composes with.
+  - It MUST record a dense peak for each of `f32`, `f16`, `bf16`, and
+    `fp8e4m3`, and record `throughput.f4e2m1` unavailable: the Ada tensor cores
+    have no FP4 mode.
+  - `memory.hbm.*` MUST record its GDDR6 capacity and bandwidth and name GDDR6
+    in `conditions` ([§4.2](#42-cudadevice)).
+  - `memory.gmem.latency` MUST be recorded unavailable: no cited figure is
+    recorded for this product, so its global-memory rate has no per-CTA cap.
+  - `compute.sm_clock_hz` MUST be the floor of
+    `91.1e12 / (142 SM * 128 results/clock * 2 FLOP/result)`, and its service
+    rates MUST follow [§4.2.1](#421-h200sxm) with the compute capability 8.9
+    column of the vendor's arithmetic-instruction table.
 
 ## 5. `CpuTarget`
 

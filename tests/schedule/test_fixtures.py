@@ -217,6 +217,22 @@ _H200_FACTS_JSON = {
         {"id": "T.reduce", "capability": None},
     ],
 }
+_SM89_FACTS_TEXT = """\
+target nvidia.rtx_6000_ada
+instructions
+  T.arange      all targets
+  T.binary      all targets
+  T.cast        all targets
+  T.clamp       all targets
+  T.unary       all targets
+  T.where       all targets
+  T.copy_async  cp.async
+  T.copy        all targets
+  T.ldmatrix    ldmatrix
+  T.relu        all targets
+  T.tiled_mma   mma.sync
+  T.reduce      all targets
+"""
 _TARGET_NEUTRAL_FACTS = """\
 target {target}
 instructions
@@ -1506,6 +1522,12 @@ FIXTURES = (
                 "nvidia.h200_sxm",
                 ("--json",),
                 _H200_FACTS_JSON,
+            ),
+            (
+                "sm_89 facts list no WGMMA or TMA instruction",
+                "nvidia.rtx_6000_ada",
+                (),
+                _SM89_FACTS_TEXT,
             ),
             (
                 "CPU facts list only target neutral instructions",

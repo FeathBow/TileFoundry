@@ -89,6 +89,7 @@ where = ["src"]
 # workflow states its own.
 markers = [
     "no_dump: opt out of the autouse DumpScope for tests that emit excessive dump output",
+    "sm89: run only where the local CUDA device is compute capability 8.9",
 ]
 
 [tool.ruff]
