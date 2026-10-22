@@ -324,22 +324,14 @@ def _pattern_refusal(matcher: PatternMatcher, op, parameter=None) -> ScheduleRef
 
 
 def _selects(op, capability) -> bool:
-    """Whether *op*'s attribute selects the declaration *capability* belongs to.
-
-    The attribute is a declaration class while scheduling and an instance in TIR;
-    either is read as ``FromAtom`` reads it and matched as ``AtomPattern`` matches.
-    """
+    """Whether *op*'s attribute, as a class or an instance, names *capability*'s declaration."""
     value = getattr(op, capability.attribute)
     declaration = value if isinstance(value, type) else type(value)
     return issubclass(declaration, capability.declaration)
 
 
 def _admit_capabilities(op, target) -> None:
-    """Refuse an op whose declared capability the target's architecture does not list.
-
-    Only the record the op's attribute selects applies to an op with several
-    declarations. Without a target there is nothing to check against.
-    """
+    """Refuse *op* if the target's architecture does not list a capability the op uses."""
     if target is None:
         return
     listed = target_capabilities(target)

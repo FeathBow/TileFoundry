@@ -97,11 +97,6 @@ def _eval_scheduled_mma(ctx):
 
 
 @register_verify_stmt(TiledMma)
-def verify_mma(call: "Call", ctx: "VerifyContext") -> None:
-    """Check operand shapes and dtypes after shared admission, which checks the capability."""
-    verify_operand_shapes(call, ctx)
-
-
 def verify_operand_shapes(call: "Call", ctx: "VerifyContext") -> None:
     """Check A (M,K), B (K,N), and C (M,N) shapes and dtypes."""
     acc_ty, lhs_ty, rhs_ty = (ctx.type_of(arg) for arg in call.args[:3])
@@ -125,4 +120,4 @@ def verify_operand_shapes(call: "Call", ctx: "VerifyContext") -> None:
         )
 
 
-__all__ = ["TiledMma", "verify_mma", "verify_operand_shapes"]
+__all__ = ["TiledMma", "verify_operand_shapes"]

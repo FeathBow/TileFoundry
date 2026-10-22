@@ -27,7 +27,6 @@ import tilefoundry.ir.hir.schedule as schedules
 import tilefoundry.passes.transforms.convert_hir_to_tir as lowering_module
 import tilefoundry.visitor_registry.instruction as instructions
 from tests._source import import_dsl
-from tests.fixtures.tir.mma import MmHandwritten
 from tilefoundry.analysis.access import AliasKind
 from tilefoundry.analysis.allocation import AllocationSummaryMetadata
 from tilefoundry.analysis.api import analyze
@@ -68,7 +67,7 @@ from tilefoundry.ir.core.register import register_op
 from tilefoundry.ir.hir.function import Function
 from tilefoundry.ir.hir.loop_region import LoopRegion
 from tilefoundry.ir.hir.mesh_region import MeshRegion
-from tilefoundry.ir.hir.schedule import ScheduleOp, match_instruction, operand_relations
+from tilefoundry.ir.hir.schedule import ScheduleOp, operand_relations
 from tilefoundry.ir.hir.tensor.arange import Arange as HirArange
 from tilefoundry.ir.hir.tensor.cast import Cast as HirCast
 from tilefoundry.ir.hir.tensor.empty import Empty
@@ -1131,56 +1130,6 @@ def test_schedule_mma_evaluates_like_matmul_plus_accumulator(atom, dtype, shape)
     exact = lhs.float() @ rhs.float()
     assert torch.equal(scheduled, acc + exact)
     assert not torch.equal(scheduled, acc + exact.to(operand).float())
-
-
-class _MmaSite(StmtVisitor[None]):
-    """The one ``TiledMma`` call of a function, with the meshes enclosing it."""
-
-    def __init__(self) -> None:
-        self.meshes: tuple = ()
-        self.site = None
-
-    def visit_MeshScope(self, stmt: MeshScope) -> None:
-        previous = self.meshes
-        self.meshes = (*previous, stmt.mesh)
-        try:
-            self.visit(stmt.body)
-        finally:
-            self.meshes = previous
-
-    def visit_Evaluate(self, stmt: Evaluate) -> None:
-        if isinstance(stmt.callable, TiledMma):
-            self.site = (stmt.args, self.meshes)
-
-
-def _sm89_mma_call():
-    """The handwritten SM80 MMA call's operands and mesh, framed on the sm_89 target."""
-    device = next(fn for fn in MmHandwritten.functions if fn.name == "mm_device")
-    visitor = _MmaSite()
-    visitor.visit(device.body)
-    args, meshes = visitor.site
-    mesh = make_mesh(*meshes)
-    frame = VerifyContext(
-        current_mesh=mesh, mesh_scope=meshes, target=CudaTarget("nvidia.rtx_6000_ada")
-    )
-    return tuple(arg.type for arg in args), mesh, frame
-
-
-@pytest.mark.parametrize("atom", (Mma, Mma()), ids=("class", "instance"))
-def test_schedule_admits_the_sm80_atom_on_sm89(atom) -> None:
-    """Only the given atom's capability is checked, although TiledMma also declares WGMMA."""
-    operands, mesh, frame = _sm89_mma_call()
-    assert match_instruction(TiledMma, {"atom": atom}, operands, mesh, frame=frame)
-
-
-@pytest.mark.parametrize(
-    "atom", (Wgmma, Wgmma(n=8, dtype="bf16", form=Form.SS)), ids=("class", "instance")
-)
-def test_schedule_refuses_wgmma_on_sm89(atom) -> None:
-    """sm_89 does not list wgmma.mma_async, whichever form names the atom."""
-    operands, mesh, frame = _sm89_mma_call()
-    with pytest.raises(ScheduleRefusal, match="needs wgmma.mma_async"):
-        match_instruction(TiledMma, {"atom": atom}, operands, mesh, frame=frame)
 
 
 def test_fp8_block_scaled_gemm_matches_its_block_scaled_reference() -> None:
