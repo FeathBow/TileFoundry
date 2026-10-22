@@ -43,7 +43,7 @@ def _emit_function(fn: ModuleFunction, ctx: CudaCodegenContext) -> LinkableFunct
     kernel = kernel_signature(launcher, ctx.codegen_context.symbols.by_function[id(fn)].symbol)
     return LinkableFunction(
         name=fn.name,
-        declaration=f'extern "C" void {launcher.name}({ctx.parameters(launcher, exported=True)});',
+        declaration=f'extern "C" const char* {launcher.name}({ctx.parameters(launcher, exported=True)});',
         definition=ctx.capture(lambda scope: _define(fn, launcher, kernel, scope)),
     )
 
@@ -77,23 +77,18 @@ def _define_launcher(
 ) -> None:
     """The ``extern "C"`` entry: the geometry it was handed, spent on one launch.
 
-    A launch the device refuses throws, so the caller never reads outputs the kernel did not write.
+    It returns the CUDA error text when the device refuses the launch and null otherwise, so
+    the host raises without an exception crossing the C ABI.
     """
-    ctx.emit(f'extern "C" void {launcher.name}({ctx.parameters(launcher, exported=True)}) {{')
+    ctx.emit(f'extern "C" const char* {launcher.name}({ctx.parameters(launcher, exported=True)}) {{')
     ctx.indent()
     _tell_the_block(launcher, ctx)
     grid_x, block_x, smem = (signature.name for signature in launcher.trailing)
     ctx.emit(f"dim3 grid({grid_x}, 1, 1);")
     ctx.emit(f"dim3 block({block_x}, 1, 1);")
     ctx.emit(f"{kernel.name}<<<grid, block, {smem}, nullptr>>>({kernel_arguments(kernel, ctx)});")
-    ctx.emit("if (cudaError_t status = cudaGetLastError(); status != cudaSuccess) {")
-    ctx.indent()
-    ctx.emit(
-        f'throw std::runtime_error(std::string("tilefoundry: launch of {kernel.name} failed: ") '
-        "+ cudaGetErrorString(status));"
-    )
-    ctx.dedent()
-    ctx.emit("}")
+    ctx.emit("cudaError_t status = cudaGetLastError();")
+    ctx.emit("return status == cudaSuccess ? nullptr : cudaGetErrorString(status);")
     ctx.dedent()
     ctx.emit("}")
 
