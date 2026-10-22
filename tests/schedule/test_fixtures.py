@@ -1876,7 +1876,11 @@ def test_schedule_candidates_reports_every_plain_site(
 
     for row in matmul_rows:
         assert not row["candidates"]
-        assert {item["id"] for item in row["refused"]} == {"T.cuda.sm90.Wgmma", "T.cuda.sm80.Mma"}
+        assert {item["id"] for item in row["refused"]} == {
+            "T.cuda.sm90.Wgmma",
+            "T.cuda.sm80.Mma",
+            "T.cuda.sm89.Mma",
+        }
         assert all(item["reason"] for item in row["refused"])
 
     if name == "chunk_rmsnorm":

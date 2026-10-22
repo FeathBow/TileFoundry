@@ -37,7 +37,7 @@ CASES: dict[int, str | None] = {
     15: "the two projected slices must hold the same number of elements",
     16: "ops::dot (warp tier): the fastest axis of the operands' mesh",
     17: "ops::dot (block tier): the operands' mesh must be a whole number of warps",
-    18: "operands must be the atom's (8, 4, 4) lane fragments",
+    18: "operands must be one atom's lane fragments",
     19: "ops::sync: a mesh's scope must be cta or thread",
     20: "ops::sync: a CTA mesh needs the module's grid-barrier counter",
     22: "a reduced mesh axis must divide into whole lanes and whole warps",
