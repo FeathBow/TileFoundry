@@ -44,6 +44,9 @@ CASES: dict[int, str | None] = {
     24: "ops::copy_async_bulk: both operands must leave the tile whole on every ",
     25: "ops::sync: a mesh that skips warps names no barrier",
     26: "get<level>: this mesh does not name that level",
+    27: "operands must be one atom's lane fragments",
+    28: "operands must be one atom's lane fragments",
+    29: "operands must be one atom's lane fragments",
 }
 
 pytestmark = pytest.mark.skipif(
