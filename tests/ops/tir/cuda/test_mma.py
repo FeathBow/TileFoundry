@@ -206,7 +206,7 @@ class Fp8MmaTile:
         b: Tensor[(32, 8), "fp8e4m3"],
         c: Tensor[(16, 8), "f32"],
     ):
-        launch(fp8_device, a, b, c, grid=(1, 1, 1), block=(32, 1, 1))  # noqa: F821
+        launch(fp8_device, a, b, c, grid=(1, 1, 1), block=(32, 1, 1))
 
 
 @pytest.mark.parametrize("target", CUDA_TARGETS)

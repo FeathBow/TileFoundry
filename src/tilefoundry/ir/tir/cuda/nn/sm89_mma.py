@@ -21,10 +21,7 @@ _B_FRAGMENT = ShardLayout(
 
 
 class Mma(MmaAtom):
-    """An E4M3 warp MMA, 16 x 8 x 32, accumulating in F32.
-
-    Its accumulator is laid out as the SM80 atom's, so it reuses that pattern.
-    """
+    """An E4M3 warp MMA, 16 x 8 x 32, accumulating in F32."""
 
     namespace = "T.cuda.sm89"
     execution_mesh = WARP
