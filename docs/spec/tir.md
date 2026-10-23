@@ -1101,7 +1101,9 @@ def variants(
     for an instruction family does not itself state an engine rate.
 
 The public declarations are `T.cuda.sm80.Mma()` (BF16 `16x8x16`, F32
-accumulator, register A/B/C over one warp) and
+accumulator, register A/B/C over one warp), `T.cuda.sm89.Mma()` (E4M3
+`16x8x32`, F32 accumulator laid out as the SM80 one, register A/B/C over one
+warp) and
 `T.cuda.sm90.Wgmma(n=..., dtype=..., form=..., a_major=..., b_major=..., mesh=...)`
 (`dtype` is `bf16`, `f16` or `fp8e4m3`; `64 x n x k` over one warpgroup with
 an F32 accumulator, where `k` is 32 bytes of `dtype`). `dtype` has no default.
@@ -1136,8 +1138,8 @@ T.tiled_mma(acc, lhs, rhs, atom=T.cuda.sm80.Mma())
 
 There is one TIR MMA op: `T.tiled_mma`. There is no optional-atom or bare-MMA
 path. Per-target emission dispatches on the atom ([target](./target.md)); the
-current CUDA emitter accepts the SM80 declaration and rejects WGMMA because
-this stage provides no WGMMA runtime emitter.
+current CUDA emitter accepts the SM80 and SM89 declarations and rejects WGMMA
+because this stage provides no WGMMA runtime emitter.
 
 #### Async copy Ops (`tir.async.*`)
 

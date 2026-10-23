@@ -19,6 +19,7 @@ from tilefoundry.visitor_registry.contexts import TypeInferContext
 
 from .mma_atom import AtomPattern, FromAtom, MmaAtom
 from .sm80_mma import Mma as _Sm80Mma
+from .sm89_mma import Mma as _Sm89Mma
 from .wgmma import Wgmma
 
 _FP_ACC_WIDEN = {
@@ -46,6 +47,11 @@ class TiledMma(Op):
             declaration=_Sm80Mma,
             attribute="atom",
         ),
+        OpCapability(
+            _Sm89Mma.capability,
+            declaration=_Sm89Mma,
+            attribute="atom",
+        ),
     )
 
     @property
@@ -62,7 +68,7 @@ class TiledMma(Op):
     atom = ParamDef(
         kind="attribute",
         annotation=MmaAtom,
-        pattern=AtomPattern(Wgmma, _Sm80Mma),
+        pattern=AtomPattern(Wgmma, _Sm80Mma, _Sm89Mma),
     )
     execution_mesh = ParamDef(
         kind="attribute",
