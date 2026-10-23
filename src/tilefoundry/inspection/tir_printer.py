@@ -7,6 +7,7 @@ from tilefoundry.inspection.printer_base import PythonPrinter
 from tilefoundry.ir.core import Call, Constant, Op, Tuple, Var
 from tilefoundry.ir.core.kinds import BinaryKind
 from tilefoundry.ir.core.module import Module, ModuleList
+from tilefoundry.ir.core.param_def import collect_param_defs
 from tilefoundry.ir.hir.function import Function as HirFunction
 from tilefoundry.ir.hir.tensor.slice import Slice
 from tilefoundry.ir.tir.launch import Launch
@@ -323,8 +324,13 @@ def _print_launch(stmt: Evaluate, printer: TirPrinter) -> list[str]:
     callee, grid = stmt.args[0], stmt.args[1:4]
     block = stmt.args[4:7]
     forwarded = stmt.args[7:]
+    options = "".join(
+        f", {param.name}={printer.print(getattr(stmt.callable, param.name), printer.context)}"
+        for param in collect_param_defs(Launch)
+        if getattr(stmt.callable, param.name) != param.default
+    )
     return [
-        f"{indent}launch({printer.visit(callee)}, {printer._join_args(forwarded)}, grid={printer.visit(Tuple(type=grid[0].type, elements=tuple(grid)))}, block={printer.visit(Tuple(type=block[0].type, elements=tuple(block)))})  # noqa: F821"
+        f"{indent}launch({printer.visit(callee)}, {printer._join_args(forwarded)}, grid={printer.visit(Tuple(type=grid[0].type, elements=tuple(grid)))}, block={printer.visit(Tuple(type=block[0].type, elements=tuple(block)))}{options})  # noqa: F821"
     ]
 
 

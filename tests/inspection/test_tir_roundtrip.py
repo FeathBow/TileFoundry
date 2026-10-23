@@ -144,6 +144,31 @@ def test_tir_for_if_and_sync_mesh_forms_roundtrip() -> None:
     assert as_script(import_dsl(printed, name="device")) == printed
 
 
+def test_launch_options_roundtrip() -> None:
+    module = import_dsl(
+        (
+            "from tilefoundry.dsl import *\n"
+            "from tilefoundry.target import CpuTarget\n"
+            "from tilefoundry_cuda import CudaTarget\n"
+            "\n"
+            "@module(entry='host', topologies=(Topology('thread', 32),))\n"
+            "class Launched:\n"
+            "    @prim_func(target=CudaTarget('nvidia.h200_sxm'))\n"
+            "    def device(a: Tensor[(32,), 'f32']):\n"
+            "        pass\n"
+            "\n"
+            "    @prim_func(target=CpuTarget())\n"
+            "    def host(a: Tensor[(32,), 'f32']):\n"
+            "        launch(device, a, grid=(1, 1, 1), block=(32, 1, 1), cluster=(1, 1, 1),\n"
+            "               dynamic_smem=512)\n"
+        ),
+        name="Launched",
+    )
+    printed = as_script(module)
+    assert "cluster=(1, 1, 1), dynamic_smem=512)" in printed
+    assert as_script(import_dsl(printed, name="Launched")) == printed
+
+
 def test_tir_for_accepts_nonconstant_bounds() -> None:
     import_dsl(
         (
