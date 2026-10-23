@@ -61,19 +61,8 @@ class Analyzer:
         return None
 
 
-@dataclass(frozen=True)
-class CodeGenerator:
-    """One immutable Target-owned code-generation service."""
-
-    emit: Callable[
-        ["Module", tuple["PrimFunction", ...], "Target"], "LinkableModule"
-    ]
-    emits: frozenset["EmitGranularity"] = frozenset({"full"})
-
-
 __all__ = [
     "AnalysisCallable",
     "AnalysisChecker",
     "Analyzer",
-    "CodeGenerator",
 ]

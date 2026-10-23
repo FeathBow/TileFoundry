@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from tilefoundry.target.amx import AmxTarget, AppleAmx, AppleM2Pro
 from tilefoundry.target.base import (
     Architecture,
     Device,
     Target,
+    TargetLoadError,
     UnsupportedCapabilityError,
+    bind,
+    load_targets,
     register_target,
     registered_targets,
 )
 from tilefoundry.target.cpu import CpuTarget
-from tilefoundry.target.cuda import CudaArchitecture, CudaDevice, CudaTarget
-from tilefoundry.target.cuda.spec import H200_SXM_ID
 from tilefoundry.target.facts import (
     MemoryExecutionFacts,
     TargetFactsError,
@@ -38,55 +38,30 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def _cuda_fallback() -> CudaTarget:
-    """Construct the built-in value used at compiler-owned omitted boundaries."""
-    return CudaTarget(H200_SXM_ID)
-
-
 def default_target() -> Target:
     """Return the normal compile-entry default target."""
-    return _cuda_fallback()
-
-
-def validate_cuda_topology_levels(target: Target, names) -> None:
-    """Validate names at the CUDA lowering boundary.
-
-    See docs/spec/target.md § Topology levels.
-    """
-    supported = tuple(
-        level.name for level in target.get_facts(TopologyFacts).topologies
-    )
-    for name in names:
-        if name not in supported:
-            raise ValueError(
-                f"cuda target supports {{{', '.join(supported)}}} "
-                f"topology levels; got {name!r}"
-            )
+    return CpuTarget()
 
 
 __all__ = [
-    "AmxTarget",
     "Analyzer",
-    "AppleAmx",
-    "AppleM2Pro",
     "Architecture",
     "CpuTarget",
-    "CudaArchitecture",
-    "CudaDevice",
-    "CudaTarget",
     "Device",
     "MemoryHierarchyFacts",
     "MemoryExecutionFacts",
     "PerformanceServiceFacts",
     "Target",
+    "TargetLoadError",
     "TargetFactsError",
     "TopologyFacts",
     "TopologyLevelFacts",
     "ThroughputFacts",
     "UnsupportedCapabilityError",
+    "bind",
     "default_target",
     "facts_result",
+    "load_targets",
     "register_target",
     "registered_targets",
-    "validate_cuda_topology_levels",
 ]

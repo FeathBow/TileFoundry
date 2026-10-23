@@ -1,7 +1,7 @@
 """Generate self-contained DSL namespace stubs from registered schemas.
 
 Inputs use ``Expr`` while attributes retain declared types and required imports.
-Overloads preserve registration order and include a runtime fallback signature.
+Namespace classes mirror the registered dialect tree.
 Generated files are gitignored and rebuilt through the DSL CLI. See
 [parser §2](docs/spec/parser.md#2-syntax-and-rules) and
 [parser §2.1](docs/spec/parser.md#21-syntax).
@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import argparse
 import enum
+import inspect
+import textwrap
 from pathlib import Path
-from typing import Iterable, Literal, get_args, get_origin
+from typing import Iterable, Literal, get_args, get_origin, get_type_hints
 
 import tilefoundry.ir  # noqa: F401  (populates schema registry as a side effect)
 from tilefoundry.ir.core.expr import Expr
-from tilefoundry.ir.core.op_registry import _schemas_by_dialect_name
+from tilefoundry.ir.core.op_registry import _REGISTRY, children, lookup
 from tilefoundry.ir.core.op_schema import OpSchema
-from tilefoundry.ir.core.param_def import MISSING, ParamDef
+from tilefoundry.ir.core.param_def import MISSING, ParamDef, collect_param_defs
 from tilefoundry.ir.types import DType
 
 _BUILTIN_TYPE_NAMES: frozenset[str] = frozenset(
@@ -113,8 +115,6 @@ def _param_signature(pd: ParamDef) -> tuple[str, str]:
 def _function_stub(
     schema: OpSchema,
     types_seen: set[str],
-    *,
-    decorator: str | None = None,
 ) -> str:
     """Render a single ``def <name>(...) -> Expr: ...`` line block.
 
@@ -133,8 +133,6 @@ def _function_stub(
         parts.append(rendered)
     sig = ", ".join(parts)
     head = f"def {schema.name}({sig}) -> Expr: ..."
-    if decorator:
-        return f"{decorator}\n{head}"
     return head
 
 
@@ -150,11 +148,11 @@ def _resolve_type_modules(dialect: str, type_names: Iterable[str]) -> list[tuple
     """
     wanted = set(type_names)
     found: dict[str, str] = {}
-    for (d, _), bucket in _schemas_by_dialect_name.items():
+    for (d, _, _), entry in _REGISTRY.items():
         if d != dialect:
             continue
-        for schema in bucket:
-            for pd in schema.signature:
+        if isinstance(entry, OpSchema):
+            for pd in entry.signature:
                 if pd.kind == "input":
                     cls = Expr
                 else:
@@ -206,115 +204,88 @@ _DIALECT_INTRINSICS: dict[str, tuple[str, ...]] = {
 }
 
 
-def _platform_namespace_stub(dialect: str) -> str | None:
-    """Typed stubs for declarative ``T.cuda.sm80`` / ``T.cuda.sm90`` atoms.
+def _namespace_stub(
+    dialect: str, path: tuple[str, ...], types_seen: set[str], names: tuple[str, ...] | None = None,
+) -> str:
+    """Render nested namespace classes and constructors for exported types."""
+    imports: set[str] = set()
 
-    These are compile-time descriptor surfaces, not OpSchema-backed ops, so the
-    schema walk never sees them. Each constructor signature is reflected from
-    the declaration's ``ParamDef`` fields. A ``DType`` parameter reuses the
-    schema walk's annotation renderer, ``Literal[<dtype names>] | DType``,
-    because the atom resolves a dtype name at construction; which dtypes it
-    takes is still its pattern's answer. Other Enum parameters stay their Enum
-    type, since no string spelling of them is accepted.
-    """
-    if dialect != "T":
-        return None
-    from tilefoundry.dsl.T._platforms import cuda  # noqa: PLC0415
-    from tilefoundry.ir.tir.cuda.nn.mma_atom import MmaAtom  # noqa: PLC0415
+    def annotation(ann) -> str:
+        if ann is type(None):
+            return "None"
+        args = get_args(ann)
+        if args:
+            return " | ".join(annotation(arg) for arg in args)
+        name = getattr(ann, "__name__", "Any")
+        module = getattr(ann, "__module__", "builtins")
+        if module != "builtins" and name not in _BUILTIN_TYPE_NAMES:
+            imports.add(f"from {module} import {name} as {name}")
+        return name
 
-    def constructor(name: str, declaration: type[MmaAtom]) -> str:
-        params = []
-        for param in declaration.parameters:
-            if param.annotation is DType:
-                annotation, _name = _annotation_type(param)
+    def render(current: tuple[str, ...], selected=None) -> str:
+        lines = [f"class {current[-1]}:"] if current else []
+        indent = "    " if current else ""
+        for name in children(dialect, current) if selected is None else selected:
+            entry = lookup(dialect, current, name)
+            if entry is None:
+                lines.append(textwrap.indent(render((*current, name)), indent))
+            elif isinstance(entry, OpSchema):
+                if current:
+                    lines.append(indent + "@staticmethod")
+                lines.append(textwrap.indent(_function_stub(entry, types_seen), indent))
             else:
-                annotation = getattr(param.annotation, "__name__", "Any")
-            rendered = f"{param.name}: {annotation}"
-            if param.has_default:
-                rendered += " = ..."
-            params.append(rendered)
-        params.append("mesh: Mesh | None = ...")
-        return (
-            "    @staticmethod\n"
-            f"    def {name}(*, {', '.join(params)}) -> MmaAtom: ..."
-        )
+                alias = "_" + "_".join((*current, name))
+                imports.add(f"from {entry.__module__} import {entry.__name__} as {alias}")
+                if issubclass(entry, enum.Enum):
+                    lines.append(f"{indent}{name}: type[{alias}]")
+                    continue
+                params = []
+                declared = collect_param_defs(entry)
+                for param in declared:
+                    typ = _annotation_type(param)[0] if param.annotation is DType else annotation(param.annotation)
+                    if param.annotation is DType:
+                        annotation(DType)
+                    default = " = ..." if param.has_default else ""
+                    params.append(f"{param.name}: {typ}{default}")
+                signature = inspect.signature(entry.__init__)
+                hints = get_type_hints(entry.__init__)
+                for param in signature.parameters.values():
+                    if param.kind == inspect.Parameter.KEYWORD_ONLY and param.name not in {p.name for p in declared}:
+                        typ = annotation(hints.get(param.name, object))
+                        default = " = ..." if param.default is not inspect.Parameter.empty else ""
+                        params.append(f"{param.name}: {typ}{default}")
+                args = "*, " + ", ".join(params) if params else ""
+                if current:
+                    lines.append(indent + "@staticmethod")
+                lines.append(f"{indent}def {name}({args}) -> {alias}: ...")
+        return "\n".join(lines)
 
-    namespaces = []
-    for namespace_name in ("sm80", "sm89", "sm90"):
-        namespace = getattr(cuda, namespace_name)
-        declarations = sorted(
-            (name, value)
-            for name, value in vars(type(namespace)).items()
-            if isinstance(value, type) and issubclass(value, MmaAtom)
-        )
-        namespaces.append((namespace_name, namespace, declarations))
-
-    lines = [
-        "# Platform sub-namespaces (not OpSchema-backed).",
-        "from tilefoundry.ir.tir.cuda.nn.mma_atom import MmaAtom as MmaAtom",
-        "from tilefoundry.ir.tir.cuda.nn.wgmma import Form as Form, Major as Major",
-        "from tilefoundry.ir.types import Mesh as Mesh",
-        "",
-    ]
-    for namespace_name, namespace, declarations in namespaces:
-        class_name = f"_Cuda{namespace_name.title()}"
-        lines.append(f"class {class_name}:")
-        enum_names = sorted(
-            name
-            for name, value in vars(type(namespace)).items()
-            if isinstance(value, type) and issubclass(value, enum.Enum)
-        )
-        lines.extend(f"    {name}: type[{name}]" for name in enum_names)
-        lines.extend(constructor(name, declaration) for name, declaration in declarations)
-        lines.append("")
-    lines.extend(
-        [
-            "class _Cuda:",
-            "    sm80: _CudaSm80",
-            "    sm89: _CudaSm89",
-            "    sm90: _CudaSm90",
-            "",
-            "cuda: _Cuda",
-        ]
-    )
-    return "\n".join(lines)
+    body = render(path, names)
+    return "\n".join(sorted(imports)) + "\n\n" + body
 
 
 def _render_dialect(dialect: str) -> str:
     """Render the entire stub file for a single dialect."""
-    by_name: dict[str, list[OpSchema]] = {}
-    for (d, n), bucket in _schemas_by_dialect_name.items():
-        if d != dialect:
-            continue
-        by_name[n] = list(bucket)
-
     body_lines: list[str] = []
-    platform_block = _platform_namespace_stub(dialect)
-    if platform_block:
-        body_lines.append(platform_block)
-        body_lines.append("")
+    types_seen: set[str] = set()
+    for name in children(dialect, ()):
+        if lookup(dialect, (), name) is None:
+            body_lines.extend((_namespace_stub(dialect, (name,), types_seen), ""))
     intrinsics = _DIALECT_INTRINSICS.get(dialect, ())
     if intrinsics:
         body_lines.append("# Parser intrinsics (not OpSchema-backed).")
         body_lines.extend(intrinsics)
         body_lines.append("")
-    types_seen: set[str] = set()
-    for name in sorted(by_name):
-        bucket = by_name[name]
-        if len(bucket) == 1:
-            body_lines.append(_function_stub(bucket[0], types_seen))
-        else:
-            for s in bucket:
-                body_lines.append(_function_stub(s, types_seen, decorator="@overload"))
-
-            body_lines.append(_function_stub(bucket[0], types_seen))
-        body_lines.append("")
+    for name in children(dialect, ()):
+        entry = lookup(dialect, (), name)
+        if isinstance(entry, OpSchema):
+            body_lines.extend((_function_stub(entry, types_seen), ""))
+        elif isinstance(entry, type):
+            body_lines.extend((_namespace_stub(dialect, (), types_seen, (name,)), ""))
 
     header = _module_header(dialect, types_seen)
     body = "\n".join(body_lines).rstrip()
-    if not body:
-        return header
-    return header + "\n" + body + "\n"
+    return header + "\n" + body + "\n" if body else header
 
 
 def regen_stubs(root: Path | None = None) -> dict[str, Path]:

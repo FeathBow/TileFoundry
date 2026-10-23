@@ -390,73 +390,44 @@ unchanged. Codegen does not support these retained TIR calls and MUST refuse the
 with `no codegen handler for Op <type>` when emission reaches one.
 
 
-### 7.3 `insert_default_host_entry`
+The target pass registry in `passes/pass_manager.py` exposes these fixed points:
 
 ```python
-class InsertHostEntryPass(ModulePass):
-    """Give a device-only module a host-callable entry.
-
-    Attributes:
-        name: attribute; Stable dump and log name.
-        requires: attribute; Ordered dependency assertion.
-    """
-
-    name: str = "insert_host_entry"
-    requires: tuple[str, ...] = ()
-
-    def run(self, module: Module) -> Module: ...
+class PassPoint(Enum):
+    BEFORE_LOWER = "before_lower"
+    AFTER_LOWER = "after_lower"
+    BEFORE_CODEGEN = "before_codegen"
 
 
-def insert_default_host_entry(module: Module) -> Module:
-    """Return a Module whose entry is host-callable.
+def register_pass(
+    target: type[Target], point: PassPoint
+) -> Callable[[type[ModulePass]], type[ModulePass]]: ...
 
-    Args:
-        module: Module to normalize.
 
-    Returns:
-        The unchanged or host-entry-normalized Module.
-    """
-    ...
+def target_passes(module: Module, point: PassPoint) -> list[ModulePass]: ...
 ```
 
 - constraints:
-  - The pass is the scheduled form of the transform and states no rule of its
-    own. It is the one pass `build` ([§6](#6-top-level-api)) registers.
-  - A CPU entry MUST pass through unchanged.
-  - With no CPU entry, an all-HIR tree MUST gain one CPU entry per Module
-    whose `entry` is set, root and children alike: Python begins a kernel
-    invocation only by entering one ([hir §1.1](./hir.md#11-function),
-    [core-ir §1](./core-ir.md#1-module)). Any other function gets no entry.
-    The tree's resolved Target MUST be CUDA. Each entry launches the Module
-    entry by its root-relative call path
-    ([core-ir §1](./core-ir.md#1-module)) at the owner's
-    effective topology and forwards its own parameters: the declared inputs,
-    then one destination per tensor result leaf in tuple leaf order. A
-    destination keeps the leaf's shape and dtype, with GMEM storage and no
-    layout, and is named `out`, else its first free `_1`, `_2`, ... suffix,
-    with the declared names reserved. A unit result adds none; any other
-    result type MUST be rejected. The pass checks these when it builds the
-    `Launch`, so later stages read them and do not derive them again. The
-    authored root entry remains unchanged. The entry's IR name is
-    `<fn.name>_host`, with the same suffix rule on collisions; its emitted C++
-    and registration names follow the HIR callee's path
-    ([codegen §4.4](./codegen.md#44-signatures)).
-  - HIR device calls into a direct child's function with implicit ConstTensor
-    arguments MUST be rejected, naming caller, callee and omitted weights and
-    requesting explicit weight parameters or orchestration calls.
-  - Mixed HIR/TIR device trees MUST be rejected.
-  - With no CPU entry and exactly one CUDA TIR device function, the transform MUST
-    synthesize a CPU entry that mirrors that function's parameters and launches
-    it. One rule covers both device shapes: whether the call reads as a launch
-    or as a dispatch follows from the callee's own shape, a lone kernel and a
-    specialization prototype taking the same route here.
-  - It MUST NOT rewrite the Target any function records. Which target a
-    function runs on is what its author wrote.
-  - The launch geometry MUST be settled here and written into the `Launch`, so
-    nothing downstream derives it again. A prototype states no body of its own,
-    so its variants state its geometry and they MUST agree.
-  - It MUST reject ambiguous device-function sets, a non-entry CPU function, or
-    a launch-provided dynamic CTA extent.
+  - `target_passes` MUST collect PrimFunction targets from each function and
+    HIR targets from the corresponding `list_call_paths` frame. A frame with
+    no Target MUST contribute no target. It MUST order
+    targets by registered name and preserve registration order within a target.
+  - A pass class MUST be registered at most once per point; a duplicate MUST
+    raise `ValueError` naming the Target and pass.
+  - Finalization MUST run target passes before and after HIR-to-TIR lowering.
+    Compile and scaffold MUST run target passes at `BEFORE_CODEGEN`.
+
+### 7.3 `insert_default_host_entry`
+
+A target may register a `BEFORE_CODEGEN` pass that gives a device-only Module
+host-callable entries. The target owns the supported device shapes and launch
+geometry; compile and scaffold select the pass through `target_passes`.
+
+- constraints:
+  - An existing CPU entry MUST pass through unchanged.
+  - Normalization MUST preserve each authored function's Target.
+  - A synthesized `Launch` MUST carry its settled geometry so downstream
+    codegen reads it without deriving it again.
 
 ## 8. Directory layout
 

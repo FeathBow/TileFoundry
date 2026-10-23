@@ -34,8 +34,9 @@ from tilefoundry.ir.hir.nn.matmul import MatMul
 from tilefoundry.ir.module_utils import list_call_paths
 from tilefoundry.ir.visitor import collect_exprs
 from tilefoundry.runtime.resource import DictResource
-from tilefoundry.target import CpuTarget, CudaTarget
+from tilefoundry.target import CpuTarget
 from tilefoundry.utils.spec_ref import spec_ref_render
+from tilefoundry_cuda import CudaTarget
 
 
 @module(entry="composed")
@@ -436,13 +437,14 @@ def test_prim_func_host_resolves_sibling_device_in_class_body():
             with Mesh((Topology("thread", 8),), Layout(shape=(8,), strides=(1,))) as m:
                 T.sync(m)
 
-        @prim_func(target=CpuTarget())
+        @prim_func
         def host(a: Tensor[(8,), "f32"]):
             launch(dev, a, grid=(1, 1, 1), block=(8, 1, 1))  # noqa: F821
 
     assert isinstance(_Launch, Module)
     assert [fn.name for fn in _Launch.functions] == ["dev", "host"]
     assert _Launch.entry == "host"
+    assert _Launch.lookup("host").target == CpuTarget()
 
 
 @pytest.mark.parametrize(

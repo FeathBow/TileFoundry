@@ -18,11 +18,7 @@ from tilefoundry.analysis.facts import MemoryHierarchyFacts, ThroughputFacts
 from tilefoundry.ir.core import OpCapability
 from tilefoundry.ir.core.op_registry import iter_schemas
 from tilefoundry.ir.types import DType
-from tilefoundry.target.amx import AmxTarget
-from tilefoundry.target.amx import spec as amx_spec
 from tilefoundry.target.base import Architecture, Device
-from tilefoundry.target.cuda import CudaArchitecture, CudaDevice, CudaTarget
-from tilefoundry.target.cuda import spec as cuda_spec
 from tilefoundry.target.hardware import (
     DocumentFormatError,
     DuplicateRegistrationError,
@@ -35,6 +31,10 @@ from tilefoundry.target.hardware import (
     hardware_documents,
     parse_document,
 )
+from tilefoundry_amx.target import AmxTarget
+from tilefoundry_amx.target import spec as amx_spec
+from tilefoundry_cuda.target import CudaArchitecture, CudaDevice, CudaTarget
+from tilefoundry_cuda.target import spec as cuda_spec
 
 _SM89 = "nvidia.sm89"
 _SM90 = "nvidia.sm90"
@@ -316,7 +316,7 @@ def test_resolution_failures_are_each_distinguishable() -> None:
     with pytest.raises(DuplicateRegistrationError, match="already registered"):
         CudaTarget.hardware.adopt(document)
 
-    unsupported = HardwareSpec("tilefoundry.target.cuda.hardware", {})
+    unsupported = HardwareSpec("tilefoundry_cuda.target.hardware", {})
     with pytest.raises(UnknownSchemaError, match="unsupported schema"):
         unsupported.resolve(_SM90)
 

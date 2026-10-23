@@ -4,7 +4,7 @@ A stride-0 operand is the whole of broadcast. Beyond it, a tile can be cut by
 two levels at once -- a CTA takes a block of it and a thread takes a row of
 that -- or by two axes of one level, which is the same cut written as a grid.
 
-See [runtime §2.6](docs/spec/runtime.md#26-cudaops).
+See [runtime §2.6](targets/cuda/tilefoundry_cuda/docs/spec/runtime.md#26-cudaops).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import pytest
 import torch
 
 import tilefoundry
-import tilefoundry.codegen.cuda  # noqa: F401 -- trigger emitter autodiscovery
+import tilefoundry_cuda.codegen  # noqa: F401 -- trigger emitter autodiscovery
 from tests.fixtures.tir.layouts import bcast
 from tilefoundry.dsl import *
 from tilefoundry.ir.core import Var, VerifyError
@@ -21,8 +21,9 @@ from tilefoundry.ir.core.kinds import BinaryKind
 from tilefoundry.ir.tir.arith import Binary
 from tilefoundry.ir.tir.prim_function import PrimFunction
 from tilefoundry.ir.tir.stmts import Evaluate, MeshScope, Return, Sequential
-from tilefoundry.target import CpuTarget, CudaTarget
+from tilefoundry.target import CpuTarget
 from tilefoundry.visitor_registry.verify import verify_prim_function
+from tilefoundry_cuda import CudaTarget
 
 _CUDA = CudaTarget("nvidia.h200_sxm")
 
@@ -164,6 +165,7 @@ def test_binary_refuses_an_operand_outside_register_memory() -> None:
     args = tuple(Var(type=type_, name=f"a{index}") for index, type_ in enumerate(types))
     mesh = Mesh((Topology("thread", 32),), Layout((32,), (1,)))
     fn = PrimFunction(
+        target=CudaTarget("nvidia.h200_sxm"),
         name="fn",
         params=args,
         body=Sequential(

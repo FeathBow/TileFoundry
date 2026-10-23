@@ -1,71 +1,41 @@
-"""Define namespace behavior.
+"""Hierarchical dialect lookup shared by the T and tf surface modules.
 
-Shared ``__getattr__`` / ``__dir__`` factory for the ``tf`` and ``T`` modules.
-
-Both dialect namespaces resolve names on demand against the OpSchema
-registry with the same algorithm; this module ships that algorithm once so
-``dsl.tf`` / ``dsl.T`` shrink to a dialect string (and, for ``T``, a
-platform-sub-namespace pre-resolver, [parser §2](docs/spec/parser.md#2-syntax-and-rules)).
+See [parser §2](docs/spec/parser.md#2-syntax-and-rules).
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable
+from typing import Any
 
-from tilefoundry.ir.core.op_registry import get_schemas, iter_schema_names
-from tilefoundry.ir.core.overload import resolve
-
-PreResolver = Callable[[str], Any]
+from tilefoundry.ir.core.op_registry import children, lookup
+from tilefoundry.ir.core.op_schema import OpSchema
 
 
-def make_dialect_namespace(
-    dialect: str,
-    pre_resolvers: Iterable[PreResolver] = (),
-) -> tuple[Callable[[str], Any], Callable[[], list[str]]]:
-    """Build dynamic attribute and directory hooks for one dialect namespace.
+class Dialect:
+    """Resolve one level of the registered dialect tree."""
 
-    Single schemas expose the Op class or alias builder; overloads expose a
-    runtime resolver. ``__all__`` is computed on demand so later registrations
-    remain visible.
+    def __init__(self, dialect: str, path: tuple[str, ...] = ()):
+        self._dialect = dialect
+        self._path = path
 
-    See [parser §2](docs/spec/parser.md#2-syntax-and-rules).
-    """
-
-    def __getattr__(name: str) -> Any:
+    def __getattr__(self, name: str) -> Any:
         if name == "__all__":
-            return sorted(iter_schema_names(dialect))
-        for pre_resolve in pre_resolvers:
-            resolved = pre_resolve(name)
-            if resolved is not None:
-                return resolved
-        schemas = get_schemas(dialect, name)
-        if not schemas:
-            raise AttributeError(
-                f"tilefoundry.dsl.{dialect} has no op named {name!r} "
-                f"(did you forget to import the module that defines it?)"
-            )
+            return self.__dir__()
+        entry = lookup(self._dialect, self._path, name)
+        if entry is not None:
+            return entry.builder if isinstance(entry, OpSchema) else entry
+        if name in self.__dir__():
+            return Dialect(self._dialect, (*self._path, name))
+        path = ".".join((self._dialect, *self._path))
+        raise AttributeError(f"tilefoundry.dsl.{path} has no op named {name!r}")
 
-        first = schemas[0]
-        if first.op_class is None:
-            return first.builder
-
-        if len(schemas) == 1:
-            return first.op_class
-
-        def _call(*args: Any, **kwargs: Any) -> Any:
-            arg_types = tuple(getattr(a, "type", None) for a in args)
-            chosen = resolve(schemas, arg_types)
-            return chosen.builder(*args, **kwargs)
-
-        _call.__name__ = name
-        _call.__qualname__ = f"tilefoundry.dsl.{dialect}.{name}"
-        _call.__doc__ = first.op_class.__doc__
-        return _call
-
-    def __dir__() -> list[str]:
-        return sorted(iter_schema_names(dialect))
-
-    return __getattr__, __dir__
+    def __dir__(self) -> list[str]:
+        return children(self._dialect, self._path)
 
 
-__all__ = ["make_dialect_namespace"]
+def make_dialect(dialect: str) -> Dialect:
+    """Create the root namespace for a dialect."""
+    return Dialect(dialect)
+
+
+__all__ = ["Dialect", "make_dialect"]

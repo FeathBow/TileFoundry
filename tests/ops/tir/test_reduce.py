@@ -1,6 +1,6 @@
 """Every reduce tier in one kernel, each forced there by its layouts alone.
 
-See [runtime §2.6](docs/spec/runtime.md#26-cudaops).
+See [runtime §2.6](targets/cuda/tilefoundry_cuda/docs/spec/runtime.md#26-cudaops).
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import pytest
 import torch
 
 import tilefoundry
-import tilefoundry.codegen.cuda  # noqa: F401 -- trigger emitter autodiscovery
+import tilefoundry_cuda.codegen  # noqa: F401 -- trigger emitter autodiscovery
 from tilefoundry.dsl import *
 from tilefoundry.ir.core import Var, VerifyError
 from tilefoundry.ir.core.kinds import ReduceKind
@@ -21,8 +21,9 @@ from tilefoundry.ir.tir.reduce import Reduce
 from tilefoundry.ir.tir.stmts import Evaluate, MeshScope, Return, Sequential
 from tilefoundry.ir.types.shard_layout import Broadcast
 from tilefoundry.ir.types.stride import compact_row_major
-from tilefoundry.target import CpuTarget, CudaTarget
+from tilefoundry.target import CpuTarget
 from tilefoundry.visitor_registry.verify import verify_prim_function
+from tilefoundry_cuda import CudaTarget
 
 _CUDA = CudaTarget("nvidia.h200_sxm")
 _MESH = Mesh((Topology("thread", 32),), Layout((32,), (1,)), ("t",))
@@ -50,6 +51,7 @@ def _pf(*types, axes: tuple = (0,)) -> PrimFunction:
     layout = getattr(types[0], "layout", None)
     mesh = layout.mesh if isinstance(layout, ShardLayout) else _MESH
     return PrimFunction(
+        target=CudaTarget("nvidia.h200_sxm"),
         name="fn",
         params=args,
         body=Sequential(

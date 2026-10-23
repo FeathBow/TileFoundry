@@ -6,10 +6,9 @@ import pytest
 import torch
 
 import tilefoundry
+from tilefoundry.codegen.context import EmitContext
 from tilefoundry.codegen.context_builder import build_codegen_context, mangle
-from tilefoundry.codegen.cpu.context import CpuCodegenContext
-from tilefoundry.codegen.cpu.module import emit_host_module
-from tilefoundry.codegen.cuda.abi import launcher_symbol
+from tilefoundry.codegen.linkable_module import LinkableModule
 from tilefoundry.dsl import *
 from tilefoundry.ir.core import Constant, Var
 from tilefoundry.ir.core.module import Module
@@ -17,7 +16,9 @@ from tilefoundry.ir.tir.launch import Launch
 from tilefoundry.ir.tir.prim_function import PrimFunction
 from tilefoundry.ir.tir.stmts import Evaluate, Sequential
 from tilefoundry.ir.tir.symbol_ref import SymbolRef
-from tilefoundry.target import CpuTarget, CudaTarget
+from tilefoundry.target import CpuTarget
+from tilefoundry_cuda import CudaTarget
+from tilefoundry_cuda.codegen.abi import launcher_symbol
 
 
 @module(entry="host", target=CudaTarget("nvidia.h200_sxm"))
@@ -129,13 +130,7 @@ def _source(devices, launches, params) -> str:
     root = build_codegen_context(mod)
     group = next(group for group in root.groups if host in group.functions)
     view = root.for_group(group)
-    ctx = CpuCodegenContext(
-        symbols=view.symbols,
-        codegen_context=view.codegen,
-        target=host.target,
-        resolved_launches=view.resolved_launches,
-    )
-    return emit_host_module(mod, (host,), host.target, ctx).source
+    return host.target.resolve(LinkableModule, mod, (host,), host.target.resolve(EmitContext, view)).source
 
 
 def test_two_launches_keep_order_and_each_block_size() -> None:
