@@ -1240,25 +1240,6 @@ def test_fp8_block_scaled_gemm_matches_its_block_scaled_reference() -> None:
     torch.testing.assert_close(scheduled.float(), reference.float(), rtol=2**-7, atol=0)
 
 
-@pytest.mark.parametrize("kind", ("plain", "hir"))
-def test_sm89_e4m3_gemm_equals_the_exact_product(kind: str) -> None:
-    """The plain and the scheduled sm_89 program both equal A @ B in F32.
-
-    Integer inputs in [-4, 4] keep every partial sum exact. The scheduled program
-    stages each 32-wide K slice through shared memory into the SM89 atom's
-    fragments, so equality there pins its K slicing, the (K, N) view of B and the
-    accumulation across slices.
-    """
-    source = Path(__file__).parents[1] / "fixtures" / "schedule" / kind / "sm89_e4m3_gemm.py"
-    generator = torch.Generator().manual_seed(0)
-    a = torch.randint(-4, 5, (16, 128), generator=generator).float().to(torch.float8_e4m3fn)
-    weight = torch.randint(-4, 5, (8, 128), generator=generator).float().to(torch.float8_e4m3fn)
-
-    result = evaluate(_module_in(source).entry_function(), a, weight.t())
-
-    assert torch.equal(result, a.float() @ weight.float().t())
-
-
 @dataclass(frozen=True)
 class FixtureCase:
     name: str
@@ -1340,6 +1321,24 @@ def _check_attention(out: Path, captured: pytest.CaptureResult[str]) -> None:
     assert comparison["rtol"] == 2**-7 and comparison["atol"] == 0
     assert report["passed"] and comparison["passed"], (
         "gather fill, mask/key alignment and natural output heads match torch"
+    )
+
+
+def _e4m3_gemm_tensor(name: str) -> torch.Tensor:
+    """Integer inputs in [-4, 4] keep every partial sum of the product exact."""
+    generator = torch.Generator().manual_seed(0)
+    a = torch.randint(-4, 5, (16, 128), generator=generator).float().to(torch.float8_e4m3fn)
+    weight = torch.randint(-4, 5, (8, 128), generator=generator).float().to(torch.float8_e4m3fn)
+    return {"a": a, "b": weight.t(), "expected": a.float() @ weight.float().t()}[name]
+
+
+def _check_e4m3_gemm(out: Path, captured: pytest.CaptureResult[str]) -> None:
+    report = _quiet_json(out, captured)
+    comparison = report["runs"][0]["outputs"][0]["fns"][0]
+    assert comparison["fn"] == "allclose"
+    assert comparison["rtol"] == 0 and comparison["atol"] == 0
+    assert report["passed"] and comparison["passed"], (
+        "K slicing, the (K, N) view of B and the accumulation across slices match torch"
     )
 
 
@@ -1577,6 +1576,37 @@ FIXTURES = (
         for name, stage in (
             ("plain sparse attention matches torch", "plain"),
             ("scheduled sparse attention matches torch", "hir"),
+        )
+    ),
+    *(
+        FixtureCase(
+            name,
+            (
+                "check",
+                f"tests/fixtures/schedule/{stage}/sm89_e4m3_gemm.py:SM89_E4M3_GEMM",
+                "--inputs",
+                "files:{tmp}/a.pt,{tmp}/b.pt",
+                "--expected",
+                "{tmp}/expected.pt",
+                "--device",
+                "cpu",
+                "--out",
+                "output",
+                "--fn",
+                "allclose",
+                "--atol",
+                "0",
+                "--rtol",
+                "0",
+                "--json",
+                "{out}",
+            ),
+            _check_e4m3_gemm,
+            files={f"{key}.pt": partial(_e4m3_gemm_tensor, key) for key in ("a", "b", "expected")},
+        )
+        for name, stage in (
+            ("plain e4m3 gemm matches torch", "plain"),
+            ("scheduled e4m3 gemm matches torch", "hir"),
         )
     ),
     FixtureCase(
