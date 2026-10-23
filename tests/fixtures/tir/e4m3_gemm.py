@@ -1,18 +1,14 @@
-"""A tile GEMM staged through shared memory, accumulated over a K loop.
+"""One warp's E4M3 GEMM staged through shared memory, accumulated over a K loop.
 
-See [runtime §2.6](targets/cuda/tilefoundry_cuda/docs/spec/runtime.md#26-cudaops).
+The hand-completed form of ``tests/fixtures/schedule/tir/sm89_e4m3_gemm.py``: the
+same allocation and order, plus the ``cp.async`` commits, waits and warp syncs
+that finalize does not emit yet.
 """
 
 from __future__ import annotations
 
-import pytest
-import torch
-
-import tilefoundry
-from tests.cuda.ops.tir.targets import CUDA_TARGETS, retarget
 from tilefoundry.dsl import *
 from tilefoundry.target import CpuTarget
-from tilefoundry.visitor_registry.verify import verify_module
 from tilefoundry_cuda import CudaTarget
 
 _CUDA = CudaTarget("nvidia.h200_sxm")
@@ -60,7 +56,7 @@ class Fp8Gemm:
             T.fill(acc, 0.0)
             for k in range(0, 128, 32):
                 a_slice = T.tensor_view(
-                    T.ptr_of(a[0:16, k:k + 32]),
+                    T.ptr_of(a[0:16, k : k + 32]),
                     shape=(2, 8, 4, 8),
                     layout=((2, 8 @ m.lane, 4 @ m.warp, 8), (1024, 128, 8, 1)),
                 )
@@ -85,7 +81,7 @@ class Fp8Gemm:
                 T.copy(a_operand, a_frag)
                 T.sync(m)
                 b_slice = T.tensor_view(
-                    T.ptr_of(b[0:8, k:k + 32]),
+                    T.ptr_of(b[0:8, k : k + 32]),
                     shape=(8, 4, 8),
                     layout=((8 @ m.lane, 4 @ m.warp, 8), (128, 8, 1)),
                 )
@@ -122,19 +118,3 @@ class Fp8Gemm:
         c: Tensor[(16, 8), "f32"],
     ):
         launch(gemm_device, a, b, c, grid=(1, 1, 1), block=(32, 1, 1), dynamic_smem=512)
-
-
-@pytest.mark.parametrize("target", CUDA_TARGETS)
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
-def test_e4m3_gemm_through_shared_memory_equals_the_f32_product(target: CudaTarget) -> None:
-    """Integer inputs keep every partial sum exact, so the tile must equal the F32 product."""
-    module = retarget(Fp8Gemm, target)
-    verify_module(module)
-    runtime = tilefoundry.compile(module, target=target)
-    torch.manual_seed(0)
-    a = torch.randint(-4, 5, (16, 128), device="cuda").float().to(torch.float8_e4m3fn)
-    b = torch.randint(-4, 5, (8, 128), device="cuda").float().to(torch.float8_e4m3fn)
-    c = torch.empty(16, 8, dtype=torch.float32, device="cuda")
-    runtime(a, b, c)
-    torch.cuda.synchronize()
-    assert torch.equal(c, a.float() @ b.float().T)

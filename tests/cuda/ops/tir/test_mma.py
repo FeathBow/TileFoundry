@@ -11,10 +11,12 @@ import torch
 import tilefoundry
 import tilefoundry_cuda.codegen  # noqa: F401 -- trigger emitter autodiscovery
 from tests.cuda.ops.tir.targets import CUDA_TARGETS, retarget
+from tests.fixtures.tir.e4m3_gemm import Fp8Gemm
 from tests.fixtures.tir.mma import MmHandwritten
 from tilefoundry.dsl import *
 from tilefoundry.ir.types.shard_layout import Broadcast
 from tilefoundry.target import CpuTarget
+from tilefoundry.visitor_registry.verify import verify_module
 from tilefoundry_cuda import CudaTarget
 
 _CUDA = CudaTarget("nvidia.h200_sxm")
@@ -222,3 +224,19 @@ def test_fp8_fragment_mma_matches_torch_matmul(target: CudaTarget) -> None:
     runtime(a, b, c)
     torch.cuda.synchronize()
     torch.testing.assert_close(c, a.float() @ b.float(), rtol=2e-2, atol=2e-2)
+
+
+@pytest.mark.parametrize("target", CUDA_TARGETS)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_e4m3_gemm_through_shared_memory_equals_the_f32_product(target: CudaTarget) -> None:
+    """Integer inputs keep every partial sum exact, so the tile must equal the F32 product."""
+    module = retarget(Fp8Gemm, target)
+    verify_module(module)
+    runtime = tilefoundry.compile(module, target=target)
+    torch.manual_seed(0)
+    a = torch.randint(-4, 5, (16, 128), device="cuda").float().to(torch.float8_e4m3fn)
+    b = torch.randint(-4, 5, (8, 128), device="cuda").float().to(torch.float8_e4m3fn)
+    c = torch.empty(16, 8, dtype=torch.float32, device="cuda")
+    runtime(a, b, c)
+    torch.cuda.synchronize()
+    assert torch.equal(c, a.float() @ b.float().T)

@@ -4,7 +4,7 @@ One warp computes the 16 x 8 F32 tile of A (16, 128) by B, the (K, N) view of a
 row-major (N, K) weight. Each 32-wide K slice of A lands row-major and each slice
 of B K-contiguous; ``T.copy`` gathers them into the SM89 atom's fragments, and the
 MMA accumulates. The waits and barriers between the copies and their consumers
-belong to the implementation, as in ``tests/ops/tir/cuda/test_gemm.py``.
+belong to the implementation, as in ``tests/fixtures/tir/e4m3_gemm.py``.
 """
 
 from tilefoundry.dsl import *
