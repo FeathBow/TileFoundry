@@ -138,6 +138,7 @@ PLAIN = (
     "gemm_relu_gemm_smem_staged",
     "gemm_relu_gemm_tiled",
     "gemm_relu_gemm_untiled",
+    "sm89_e4m3_gemm",
     "sparse_decode",
 )
 PLAIN_DIMS = {"chunk_rmsnorm": {"chunks": 16}}
@@ -179,6 +180,7 @@ CANDIDATES_REFUSED = {
     "staged_nested": "source has no unscheduled candidate site",
     "captured_insert_update": "source has no unscheduled candidate site",
     "loop_carry_from_param": "source has no unscheduled candidate site",
+    "sm89_e4m3_gemm": "source has no unscheduled candidate site",
 }
 TIR = tuple(sorted((Path(__file__).parents[1] / "fixtures" / "schedule" / "tir").glob("*.py")))
 HIR = tuple(sorted((Path(__file__).parents[1] / "fixtures" / "schedule" / "hir").glob("*.py")))
@@ -375,6 +377,7 @@ SMEM_GOLDEN = {
     "gemm_8192x17408x5120_register_store": 196_608,
     "gemm_8192x17408x5120_tma_store": 212_992,
     "sm80_mma_ldmatrix": 1_536,
+    "sm89_e4m3_gemm": 512,
     "wgmma_a_k_major": 6_144,
     "wgmma_a_mn_major": 6_144,
     "wgmma_b_nk": 2_560,
@@ -592,6 +595,12 @@ RMEM_EXPECTED = {
             512, "analysis coalesces the f32 loop result and bf16 cast: max(512, 256)"
         ),
         "thread@0:64#0": _RmemExpectation(1_280, "parent envelope of accumulator/fragments"),
+    },
+    "sm89_e4m3_gemm": {
+        "thread@0:32#0": _RmemExpectation(
+            1_280,
+            "512-byte f32 accumulator plus 512-byte lhs and 256-byte rhs e4m3 fragments",
+        ),
     },
     "wgmma_a_k_major": {
         "thread@128:128#0": _RmemExpectation(8_192, "64x32 f32 zero accumulator"),
@@ -1229,6 +1238,25 @@ def test_fp8_block_scaled_gemm_matches_its_block_scaled_reference() -> None:
         for kb in range(k // block)
     ).to(torch.bfloat16)
     torch.testing.assert_close(scheduled.float(), reference.float(), rtol=2**-7, atol=0)
+
+
+@pytest.mark.parametrize("kind", ("plain", "hir"))
+def test_sm89_e4m3_gemm_equals_the_exact_product(kind: str) -> None:
+    """The plain and the scheduled sm_89 program both equal A @ B in F32.
+
+    Integer inputs in [-4, 4] keep every partial sum exact. The scheduled program
+    stages each 32-wide K slice through shared memory into the SM89 atom's
+    fragments, so equality there pins its K slicing, the (K, N) view of B and the
+    accumulation across slices.
+    """
+    source = Path(__file__).parents[1] / "fixtures" / "schedule" / kind / "sm89_e4m3_gemm.py"
+    generator = torch.Generator().manual_seed(0)
+    a = torch.randint(-4, 5, (16, 128), generator=generator).float().to(torch.float8_e4m3fn)
+    weight = torch.randint(-4, 5, (8, 128), generator=generator).float().to(torch.float8_e4m3fn)
+
+    result = evaluate(_module_in(source).entry_function(), a, weight.t())
+
+    assert torch.equal(result, a.float() @ weight.float().t())
 
 
 @dataclass(frozen=True)
@@ -1874,7 +1902,7 @@ def test_schedule_candidate_reports_cover_every_site(
         if row["op"] == "tf.reshard"
     )
     matmuls = [(name, row) for name, row in sites if row["op"] == "tf.matmul"]
-    assert len(matmuls) == 8
+    assert len(matmuls) == 9
     assert not any(row["candidates"] for _name, row in matmuls)
 
 
