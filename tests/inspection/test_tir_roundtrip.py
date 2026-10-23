@@ -148,7 +148,8 @@ def test_launch_options_roundtrip() -> None:
     module = import_dsl(
         (
             "from tilefoundry.dsl import *\n"
-            "from tilefoundry.target import CpuTarget, CudaTarget\n"
+            "from tilefoundry.target import CpuTarget\n"
+            "from tilefoundry_cuda import CudaTarget\n"
             "\n"
             "@module(entry='host', topologies=(Topology('thread', 32),))\n"
             "class Launched:\n"
