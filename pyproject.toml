@@ -34,6 +34,10 @@ Repository = "https://github.com/tile-ai/TileFoundry"
 [project.scripts]
 tilefoundry = "tilefoundry.cli:main"
 
+[project.entry-points."tilefoundry.targets"]
+cuda = "tilefoundry_cuda"
+amx = "tilefoundry_amx"
+
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-xdist>=3", "pytest-cov>=7"]
 dev = [
@@ -56,16 +60,21 @@ skip_empty = true
 [tool.setuptools_scm]
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "targets/cuda", "targets/amx"]
+include = ["tilefoundry", "tilefoundry.*", "tilefoundry_*"]
 
 [tool.setuptools.package-data]
-"tilefoundry.codegen.cuda.templates" = ["*.j2"]
+"tilefoundry.runtime" = ["include/tilefoundry/runtime/cpu/*.h"]
+"tilefoundry_cuda.codegen" = ["include/tilefoundry/runtime/cuda/**/*"]
+"tilefoundry_cuda" = ["docs/spec/*.md"]
+"tilefoundry.codegen" = ["templates/cmake/*.j2"]
+"tilefoundry_cuda.codegen.templates" = ["*.j2"]
 "tilefoundry.codegen.cpu.templates" = ["*.j2"]
-"tilefoundry.target.cuda.hardware" = ["*.toml"]
-"tilefoundry.target.amx.hardware" = ["*.toml"]
+"tilefoundry_cuda.target.hardware" = ["*.toml"]
+"tilefoundry_amx.target.hardware" = ["*.toml"]
+"tilefoundry_amx" = ["include/tilefoundry/runtime/amx/*.h", "docs/spec/*.md"]
 
 [tool.setuptools.data-files]
-"include/tilefoundry/runtime/amx" = ["include/tilefoundry/runtime/amx/*.h"]
 "share/tilefoundry/spec" = ["docs/spec/*.md"]
 # Tutorial pages have distinct filenames, so one destination is sufficient.
 "share/tilefoundry/tutorial" = ["docs/tutorial/*.md"]
@@ -89,10 +98,10 @@ where = ["src"]
 # workflow states its own.
 markers = [
     "no_dump: opt out of the autouse DumpScope for tests that emit excessive dump output",
-    "sm89: run only where the local CUDA device is compute capability 8.9",
 ]
 
 [tool.ruff]
+src = [".", "src", "targets/cuda", "targets/amx"]
 # Snapshot examples, shipped model sources, and recorded parser and printer output are
 # evidence; formatting them changes that evidence.
 extend-exclude = ["examples", "tests/models", "tests/parser/golden", "tests/fixtures/schedule/tir"]

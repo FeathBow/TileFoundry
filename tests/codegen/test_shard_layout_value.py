@@ -1,6 +1,6 @@
 """Render a sharded operand's ``ShardLayout`` value for a sliced mesh.
 
-See [runtime §2.3.2](docs/spec/runtime.md#232-layoutmeshcuh).
+See [runtime §2.3.2](targets/cuda/tilefoundry_cuda/docs/spec/runtime.md#232-layoutmeshcuh).
 """
 
 from __future__ import annotations
@@ -9,11 +9,11 @@ import re
 
 import pytest
 
-from tilefoundry.codegen.cuda.tir.memory.tensor_view import render_shard_layout_value
-from tilefoundry.codegen.cuda.tir.stmts.mesh_scope import mesh_type
 from tilefoundry.ir.core.errors import VerifyError
 from tilefoundry.ir.types import Layout, Mesh, ShardLayout, Split, Topology
 from tilefoundry.ir.types.layout import ComposedLayout
+from tilefoundry_cuda.codegen.tir.memory.tensor_view import render_shard_layout_value
+from tilefoundry_cuda.codegen.tir.stmts.mesh_scope import mesh_type
 
 _BLOCK = Mesh(
     (Topology("thread", 128),), Layout(shape=(4, 32), strides=(32, 1)), ("w", "t")

@@ -49,19 +49,19 @@ AliasMap = Mapping[str, AliasValue]
 
 
 def _resolved_device(device: str) -> str:
-    """A device string with a bare ``"cuda"`` pinned to the current device.
+    """Pin a bare accelerator name to the current device before opening a shard.
 
-    ``safetensors`` reads the string itself and takes bare ``"cuda"`` as index 0,
-    while every torch spelling of it -- ``.cuda()``, ``device="cuda"``, a
-    ``torch.device`` context -- means whichever device the process has selected.
-    On a machine with one card those agree; on a machine with several, the same word
-    lands on two of them and a tensor loaded here cannot be compared against one
-    computed anywhere else. Resolving it once here makes the word mean what torch
-    means by it. An index the caller wrote is left alone.
+    Safetensors reads a bare device name as index 0, while torch uses the device
+    currently selected by the process. On multiple devices those can differ, so
+    tensors loaded here cannot be compared with tensors computed elsewhere.
+    Resolve the name to torch's current index; leave an explicit index alone.
     """
-    if device != "cuda" or not torch.cuda.is_available():
+    if device == "cpu" or ":" in device:
         return device
-    return f"cuda:{torch.cuda.current_device()}"
+    module = torch.get_device_module(device)
+    if not module.is_available():
+        return device
+    return f"{device}:{module.current_device()}"
 
 
 def _alias_lookup(alias: AliasMap, prefix: str, name: str) -> "AliasValue | None":
@@ -196,7 +196,7 @@ class SafetensorsResource:
     """
 
     def __init__(
-        self, ckpt_dir: str, prefix: str = "", device: str = "cuda",
+        self, ckpt_dir: str, prefix: str = "", *, device: str,
         alias: AliasMap | None = None,
     ) -> None:
         self._ckpt_dir = ckpt_dir
@@ -295,7 +295,7 @@ class SafetensorsResource:
     def subtree(self, seg: str) -> "SafetensorsResource":
         resolved = _resolve_segment(self._alias, self._prefix, seg)
         child = SafetensorsResource(
-            self._ckpt_dir, f"{self._prefix}{resolved}.", self._device,
+            self._ckpt_dir, f"{self._prefix}{resolved}.", device=self._device,
             alias=self._alias,
         )
         child._shard_of_key = self._shard_of_key

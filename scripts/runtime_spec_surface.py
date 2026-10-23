@@ -22,9 +22,12 @@ from pathlib import Path
 import clang.cindex as CI
 
 ROOT = Path(__file__).resolve().parent.parent
-HEADERS = ROOT / "include/tilefoundry/runtime"
+HEADERS = {
+    "cpu": ROOT / "src/tilefoundry/runtime/include/tilefoundry/runtime",
+    "cuda": ROOT / "targets/cuda/tilefoundry_cuda/codegen/include/tilefoundry/runtime",
+}
 PACKAGE = ROOT / "src/tilefoundry"
-SPEC = ROOT / "docs/spec/runtime.md"
+SPECS = (ROOT / "docs/spec/runtime.md", *sorted(ROOT.glob("targets/*/tilefoundry_*/docs/spec/runtime.md")))
 LIBCLANG = ("/usr/lib/x86_64-linux-gnu/libclang-18.so.1", "/usr/lib/llvm-18/lib/libclang.so.1")
 """Where a system install puts it; the ``libclang`` wheel is asked first."""
 
@@ -205,7 +208,7 @@ def _declarations(header: str) -> list[str]:
     """
     source = ROOT / "build" / "spec_surface_tu.cpp"
     source.parent.mkdir(exist_ok=True)
-    source.write_text(f'{PRELUDE}#include "{(HEADERS / header).resolve()}"\n}}\n')
+    source.write_text(f'{PRELUDE}#include "{(HEADERS[header.split("/")[0]] / header).resolve()}"\n}}\n')
     index = CI.Index.create()
     _check_prelude(index)
     unit = index.parse(
@@ -213,7 +216,7 @@ def _declarations(header: str) -> list[str]:
         args=PARSE_ARGS,
         options=CI.TranslationUnit.PARSE_SKIP_FUNCTION_BODIES,
     )
-    text = (HEADERS / header).read_bytes()
+    text = (HEADERS[header.split("/")[0]] / header).read_bytes()
     out: list[str] = []
     seen: set[tuple[int, int]] = set()
 
@@ -382,7 +385,7 @@ def _python_block(target: str) -> str:
 def _formatted(source: str) -> str:
     """*source* as the repository formats Python, so a block reads like the code."""
     done = subprocess.run(
-        ["ruff", "format", "--stdin-filename", str(SPEC.with_suffix(".py")), "-"],
+        ["ruff", "format", "--stdin-filename", str(SPECS[0].with_suffix(".py")), "-"],
         input=source, capture_output=True, text=True, check=False,
     )
     if done.returncode:
@@ -449,7 +452,7 @@ def _block(region: str) -> str:
     if target.endswith(".py") or ".py::" in target:
         return _python_block(target)
     header = target
-    path = (HEADERS / header).resolve().relative_to(ROOT)
+    path = (HEADERS[header.split("/")[0]] / header).resolve().relative_to(ROOT)
     decls = _declarations(header)
     if not decls:
         return f"```text\n// {path}\n// This header declares no surface of its own.\n```"
@@ -473,24 +476,24 @@ def render(spec: str) -> str:
 
 def main(argv: list[str]) -> int:
     _configure()
-    current = SPEC.read_text()
-    updated = render(current)
-    if "--check" in argv:
-        if current != updated:
-            print(f"{SPEC.relative_to(ROOT)}: stale; run scripts/runtime_spec_surface.py")
-            sys.stdout.writelines(
-                difflib.unified_diff(
-                    current.splitlines(keepends=True),
-                    updated.splitlines(keepends=True),
-                    "spec", "generated",
-                )
-            )
-            return 1
-        return 0
-    if current != updated:
-        SPEC.write_text(updated)
-        print(f"{SPEC.relative_to(ROOT)}: updated")
-    return 0
+    stale = False
+    for spec in SPECS:
+        current = spec.read_text()
+        updated = render(current)
+        if current == updated:
+            continue
+        if "--check" in argv:
+            stale = True
+            print(f"{spec.relative_to(ROOT)}: stale; run scripts/runtime_spec_surface.py")
+            sys.stdout.writelines(difflib.unified_diff(
+                current.splitlines(keepends=True), updated.splitlines(keepends=True),
+                "spec", "generated",
+            ))
+        else:
+            spec.write_text(updated)
+            print(f"{spec.relative_to(ROOT)}: updated")
+    return int(stale)
+
 
 
 if __name__ == "__main__":

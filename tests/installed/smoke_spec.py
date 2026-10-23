@@ -14,6 +14,10 @@ def test_spec_lists_the_documents_there_are(tf) -> None:
 
     assert "hir" in listed and "dsl" in listed
     assert "runtime" in listed
+    assert {
+        "cuda/target", "cuda/tir", "cuda/runtime", "cuda/codegen",
+        "cuda/passes", "cuda/hir", "cuda/cli", "amx/target", "amx/tir",
+    } <= set(listed.split())
 
 
 def test_spec_outlines_a_document_rather_than_printing_it(tf, shipped) -> None:
@@ -59,8 +63,8 @@ def test_spec_rejects_a_section_that_does_not_exist(tf) -> None:
 @pytest.mark.parametrize(
     ("topic", "section", "expected"),
     (
-        ("target", "topology-levels", "`Topology.size` MUST be an explicit `ShapeDim`"),
-        ("core-ir", "target-inheritance", 'with `target=CudaTarget("nvidia.h200_sxm")`'),
+        ("cuda/target", "topology-levels", "`Topology.size` MUST be an explicit `ShapeDim`"),
+        ("core-ir", "target-inheritance", 'with `target=CpuTarget()`'),
         ("core-ir", "default-step", "MUST have no default step"),
         ("cli", "check", "A FAIL with `--inputs random`"),
     ),

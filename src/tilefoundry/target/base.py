@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 import inspect
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, fields, is_dataclass
 from functools import cached_property
+from importlib.metadata import entry_points
 from importlib.resources import files
 from pathlib import Path
 from types import MappingProxyType
@@ -22,8 +25,34 @@ from tilefoundry.target.hardware.envelope import (
     UnknownSchemaError,
     parse_document,
 )
-from tilefoundry.target.services import Analyzer, CodeGenerator
+from tilefoundry.target.services import Analyzer
 from tilefoundry.utils.python_source import PythonExpr, _merge_imports
+
+T = TypeVar("T")
+_BINDINGS: dict[tuple[type[Target], type], type] = {}
+
+
+def bind(target: type[Target], base: type) -> Callable[[type[T]], type[T]]:
+    """Bind a Target's implementation of a base class, refusing a second owner."""
+    def register(implementation: type[T]) -> type[T]:
+        if not issubclass(implementation, base):
+            raise TypeError(f"{implementation.__name__} must inherit {base.__name__}")
+        key = (target, base)
+        if key in _BINDINGS:
+            raise ValueError(f"{target.__name__}: {base.__name__} already bound to {_BINDINGS[key].__name__}")
+        _BINDINGS[key] = implementation
+        return implementation
+    return register
+
+
+def _exporting_module(cls: type) -> str:
+    parts = cls.__module__.split(".")
+    for size in range(1, len(parts) + 1):
+        name = ".".join(parts[:size])
+        module = sys.modules.get(name)
+        if module is not None and vars(module).get(cls.__name__) is cls:
+            return name
+    return cls.__module__
 
 
 def _target_value_to_python(value: object) -> PythonExpr:
@@ -38,11 +67,7 @@ def _target_value_to_python(value: object) -> PythonExpr:
     if isinstance(value, (str, int, float, bool, type(None))):
         return PythonExpr((), repr(value))
     if is_dataclass(value):
-        module = type(value).__module__
-        if module.startswith("tilefoundry.target.cuda."):
-            module = "tilefoundry.target.cuda"
-        elif module.startswith("tilefoundry.target.amx."):
-            module = "tilefoundry.target.amx"
+        module = _exporting_module(type(value))
         rendered = tuple((field.name, _target_value_to_python(getattr(value, field.name))) for field in fields(value) if field.init or field.compare)
         return PythonExpr(
             _merge_imports((f"from {module} import {type(value).__name__}",), *(item.imports for _, item in rendered)),
@@ -55,7 +80,7 @@ FactsT = TypeVar("FactsT")
 SchemaBuilder = Callable[[HardwareDocument], Any]
 
 
-def _target_summary(target: object) -> str:
+def target_summary(target: object) -> str:
     """The stable Target identity suitable for user-facing diagnostics."""
     target_type = type(target)
     return f"{target_type.__name__} ({getattr(target_type, 'name', '<unregistered>')})"
@@ -71,9 +96,6 @@ class Architecture:
     name: str
     max_threads_per_cta: int
 
-    def _python_import_module(self) -> str:
-        return type(self).__module__
-
     def to_python(self) -> PythonExpr:
         return _target_value_to_python(self)
 
@@ -83,9 +105,6 @@ class Device:
 
     name: str
     sm_count: int
-
-    def _python_import_module(self) -> str:
-        return type(self).__module__
 
     def to_python(self) -> PythonExpr:
         return _target_value_to_python(self)
@@ -202,6 +221,10 @@ class Target:
 
     name: ClassVar[str]
 
+    def torch_device_type(self) -> str:
+        """The torch device type holding this program's tensor arguments."""
+        return "cpu"
+
     @cached_property
     def storage_owners(self):
         """Project storage owners once from this target's immutable facts."""
@@ -236,9 +259,6 @@ class Target:
         """Return the values this Target class can currently construct."""
         return (cls(),)
 
-    def _python_import_module(self) -> str:
-        return type(self).__module__
-
     def to_python(self) -> PythonExpr:
         return _target_value_to_python(self)
 
@@ -250,14 +270,12 @@ class Target:
         if analyzer is not None:
             return analyzer
         raise UnsupportedCapabilityError(
-            f"{_target_summary(self)}: no analyzer for {selector!r}"
+            f"{target_summary(self)}: no analyzer for {selector!r}"
         )
 
-    def get_code_generator(self) -> CodeGenerator:
-        """Return the code-generation service selected by this Target."""
-        raise UnsupportedCapabilityError(
-            f"{_target_summary(self)}: no code generator"
-        )
+    def resolve(self, base: type[T], *args) -> T:
+        """Create the bound implementation, or the base class's default."""
+        return _BINDINGS.get((type(self), base), base).create(self, *args)
 
     def get_facts(
         self, facts_type: type[FactsT], query: object | None = None
@@ -272,34 +290,34 @@ class Target:
         if facts_type is MemoryExecutionFacts and query is None:
             return facts_result(self, facts_type, MemoryExecutionFacts(()))
         raise UnsupportedCapabilityError(
-            f"{_target_summary(self)}: no Facts projection for "
+            f"{target_summary(self)}: no Facts projection for "
             f"{getattr(facts_type, '__name__', facts_type)!r}"
         )
 
     def validate_program_topology(self, topology: Topology) -> None:
         """Validate one declared topology against this Target's Facts."""
-        target_summary = _target_summary(self)
+        summary = target_summary(self)
         levels = self.get_facts(TopologyFacts).topologies
         limits = {level.name: level.max_logical_units for level in levels}
         if topology.name not in limits:
             raise ValueError(
-                f"{target_summary}: unsupported topology level {topology.name!r}; "
+                f"{summary}: unsupported topology level {topology.name!r}; "
                 f"supported levels are {tuple(limits)}"
             )
         limit = limits[topology.name]
         if isinstance(topology.size, bool):
             raise ValueError(
-                f"{target_summary}: topology {topology.name!r} extent {topology.size!r} "
+                f"{summary}: topology {topology.name!r} extent {topology.size!r} "
                 "must be positive"
             )
         if isinstance(topology.size, int) and topology.size < 1:
             raise ValueError(
-                f"{target_summary}: topology {topology.name!r} extent {topology.size} "
+                f"{summary}: topology {topology.name!r} extent {topology.size} "
                 "must be positive"
             )
         if isinstance(topology.size, int) and limit is not None and topology.size > limit:
             raise ValueError(
-                f"{target_summary}: topology {topology.name!r} extent {topology.size} "
+                f"{summary}: topology {topology.name!r} extent {topology.size} "
                 f"must satisfy 1 <= extent <= {limit}"
             )
 
@@ -364,6 +382,39 @@ def registered_targets() -> Mapping[str, type[Target]]:
     return MappingProxyType(_TARGET_CLASSES)
 
 
+class TargetLoadError(RuntimeError):
+    """An installed target package could not be loaded as declared."""
+
+
+_LOADED = False
+
+
+def load_targets() -> Mapping[str, type[Target]]:
+    """Import each installed target package once; importing registers its contents."""
+    global _LOADED
+    if not _LOADED:
+        for ep in entry_points(group="tilefoundry.targets"):
+            if ep.value in sys.modules:
+                continue
+            package = f"tilefoundry_{ep.name}"
+            distribution = ep.dist.name if ep.dist is not None else "<unknown distribution>"
+            if ep.value != package:
+                raise TargetLoadError(
+                    f"{distribution}: entry point {ep.name}={ep.value} "
+                    f"must name package {package}"
+                )
+            try:
+                importlib.import_module(ep.value)
+            except Exception as error:
+                raise TargetLoadError(
+                    f"{distribution}: importing {ep.value}: {error}"
+                ) from error
+            if ep.name not in registered_targets():
+                raise TargetLoadError(f"{ep.value} registered no Target named {ep.name}")
+        _LOADED = True
+    return registered_targets()
+
+
 def _unregister_target(target_type: type[Target]) -> None:
     """Remove one exact provider class while undoing a persisted module load."""
     name = target_type.name
@@ -412,7 +463,7 @@ def select(
     return resolved
 
 
-def _available_device_ids(hardware: HardwareSpec) -> tuple[str, ...]:
+def available_device_ids(hardware: HardwareSpec) -> tuple[str, ...]:
     """Return devices whose sole compatible architecture is available."""
     documents = hardware.documents()
     return tuple(
@@ -425,7 +476,7 @@ def _available_device_ids(hardware: HardwareSpec) -> tuple[str, ...]:
     )
 
 
-def _architecture_of(
+def architecture_of(
     device: Any,
     *,
     device_type: type[Device],
@@ -490,10 +541,16 @@ __all__ = [
     "Device",
     "HardwareSpec",
     "Target",
+    "TargetLoadError",
     "UnsupportedCapabilityError",
+    "architecture_of",
+    "available_device_ids",
+    "bind",
     "check_compatible",
+    "load_targets",
     "register_target",
     "registered_targets",
     "select",
     "target_instance",
+    "target_summary",
 ]
