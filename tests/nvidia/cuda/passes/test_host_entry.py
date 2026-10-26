@@ -39,12 +39,15 @@ class HostEntryCase(Case):
 
 
 class DeviceEntry(HostEntryCase):
-    """A device entry with no host entry, launched on one block of 128 threads."""
+    """A device entry with no host entry, launched on blocks of 128 threads."""
+
+    ctas = 1
 
     def guard(self, state, problems):
         problems.run("gains a host entry that launches it", self.gains_a_host_entry, state)
         problems.run("leaves every recorded target alone", self.leaves_targets_alone, state)
         problems.run("reads its geometry", self.reads_its_geometry, state)
+        problems.run("asks for the shared memory it reaches", self.asks_for_its_reach, state)
 
     def gains_a_host_entry(self, authored):
         lowered = insert_default_host_entry(authored)
@@ -60,9 +63,13 @@ class DeviceEntry(HostEntryCase):
 
     def reads_its_geometry(self, authored):
         assert _geometry(_launch_of(insert_default_host_entry(authored))) == (
-            (1, 1, 1),
+            (self.ctas, 1, 1),
             (128, 1, 1),
         )
+
+    def asks_for_its_reach(self, authored):
+        launch = _launch_of(insert_default_host_entry(authored))
+        assert launch.callable.dynamic_smem == self.dynamic_smem
 
 
 @case
@@ -71,6 +78,7 @@ class LoneKernel(DeviceEntry):
 
     path: Path = DEVICE_ENTRIES
     name: str | None = "_OneKernel"
+    dynamic_smem: int = 0
 
 
 @case
@@ -82,6 +90,35 @@ class Prototype(DeviceEntry):
 
     path: Path = DEVICE_ENTRIES
     name: str | None = "_Prototype"
+    dynamic_smem: int = 0
+
+
+@case
+class SharedRing(DeviceEntry):
+    """Two slots of 512 bytes at offsets 0 and 512, so the launch asks for 1024."""
+
+    path: Path = DEVICE_ENTRIES
+    name: str | None = "_SharedRing"
+    dynamic_smem: int = 1024
+
+
+@case
+class StagedPrototype(DeviceEntry):
+    """One launch serves every variant, so it asks for the farthest any of them reaches."""
+
+    path: Path = DEVICE_ENTRIES
+    name: str | None = "_StagedPrototype"
+    dynamic_smem: int = 2560
+
+
+@case
+class CtaHalves(DeviceEntry):
+    """Shared memory belongs to a CTA, so a view split across two CTAs asks for one half."""
+
+    path: Path = DEVICE_ENTRIES
+    name: str | None = "_CtaHalves"
+    ctas: int = 2
+    dynamic_smem: int = 131072
 
 
 @case

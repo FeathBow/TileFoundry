@@ -12,10 +12,13 @@ body does not implement multi-device execution. Skeletons retain signatures,
 parameter views, specialization dispatch and launchers, replacing statements
 with `// TODO: <fn>`.
 
-The device unit owns kernels and C-ABI launchers. A launcher reads launch
-status immediately and returns the CUDA error text or null. Host entries
-raise on an error; no exception crosses the C ABI and a refused launch never
-returns as though the kernel ran. A host unit MUST NOT reference CUDA or CuTe
+The device unit owns kernels and C-ABI launchers. A launcher asked for more
+than 48 KiB of dynamic shared memory MUST first raise its kernel's
+`cudaFuncAttributeMaxDynamicSharedMemorySize` to that size. A launcher reads
+launch status immediately and returns the CUDA error text or null, including
+when the device refuses the raised limit. Host entries raise on an error; no
+exception crosses the C ABI and a refused launch never returns as though the
+kernel ran. A host unit MUST NOT reference CUDA or CuTe
 types.
 
 CUDA registers the host writer for shared `Launch` at

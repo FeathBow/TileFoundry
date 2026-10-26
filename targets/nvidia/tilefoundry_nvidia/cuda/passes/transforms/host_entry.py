@@ -2,25 +2,28 @@
 
 The entry is synthesized, never retargeted: which target a function records is
 what its author wrote, and a pass that rewrites it decides in the wrong place.
-Launch geometry is settled here and written into the ``Launch``, so nothing
-downstream derives it a second time. A launch-provided (dynamic) grid is not
-supported by the synthesized entry.
+Launch geometry, and the dynamic shared memory a kernel reaches, are settled
+here and written into the ``Launch``, so nothing downstream derives them a
+second time. A launch-provided (dynamic) grid is not supported by the
+synthesized entry.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 
-from tilefoundry.ir.core import Var
+from tilefoundry.analysis.allocation import storage_bytes
+from tilefoundry.ir.core import Call, Constant, Expr, Var
 from tilefoundry.ir.core.module import Module
 from tilefoundry.ir.hir.function import Function
 from tilefoundry.ir.module_utils import list_call_paths
 from tilefoundry.ir.tir.launch import launch_call
+from tilefoundry.ir.tir.memory import TensorView
 from tilefoundry.ir.tir.prim_function import PrimFunction
 from tilefoundry.ir.tir.stmts import Sequential
-from tilefoundry.ir.types import StorageKind, TensorType, TupleType, UnitType
+from tilefoundry.ir.types import StorageKind, TensorType, Topology, TupleType, UnitType
 from tilefoundry.ir.types.layout import Layout
-from tilefoundry.ir.visitor import ExprVisitor
+from tilefoundry.ir.visitor import ExprVisitor, StmtExprMutator
 from tilefoundry.passes.pass_base import ModulePass
 from tilefoundry.passes.pass_manager import PassPoint, register_pass
 from tilefoundry.target import CpuTarget
@@ -88,6 +91,43 @@ def _launch_config_of(
     return (grid, 1, 1), (block, 1, 1)
 
 
+class _SharedMemoryReach(StmtExprMutator):
+    """The farthest byte any integer-address shared-memory view reaches.
+
+    It visits every expression a statement embeds and returns each unchanged.
+    An integer ``TensorView`` address is a byte offset from the dynamic
+    shared-memory base, and each view spans what the allocator reserves for it
+    within one unit of the level that owns shared memory.
+    """
+
+    def __init__(self, level: str | None, topologies: tuple[Topology, ...]) -> None:
+        self.level = level
+        self.topologies = topologies
+        self.end = 0
+
+    def visit_Call(self, call: Call, ctx=None) -> Expr:
+        address = call.args[0] if isinstance(call.target, TensorView) else None
+        if isinstance(address, Constant) and type(address.value) is int:
+            span = storage_bytes(call.type, topology_level=self.level, topologies=self.topologies)
+            self.end = max(self.end, address.value + span)
+        return self._expr_generic_visit(call, ctx)
+
+
+def _dynamic_shared_memory(module: Module, device_fn: PrimFunction) -> int:
+    """Bytes of dynamic shared memory *device_fn* and its variants reach in one owner unit.
+
+    A split at the level that owns shared memory, or a coarser one, gives each
+    unit its own share; a finer split shares that unit's storage.
+    """
+    owner = device_fn.target.storage_owners.owner.get(StorageKind.SMEM)
+    topologies = module.effective_topologies()
+    level = owner if any(topology.name == owner for topology in topologies) else None
+    reach = _SharedMemoryReach(level, topologies)
+    for fn in (device_fn, *device_fn.variants):
+        reach.visit(fn.body)
+    return reach.end
+
+
 def insert_default_host_entry(module: Module) -> Module:
     """Keep CPU entries or synthesize entries according to the module's IR kind."""
     entry = module.entry_function()
@@ -107,7 +147,9 @@ def entry_for_one_device_function(module: Module) -> Module:
     device_fn = _device_callee(module)
     entry_params = tuple(Var(type=p.type, name=p.name) for p in device_fn.params)
     grid, block = _launch_config_of(module)
-    launch = launch_call(device_fn, entry_params, grid, block)
+    launch = launch_call(
+        device_fn, entry_params, grid, block, dynamic_smem=_dynamic_shared_memory(module, device_fn)
+    )
     name = _fresh_entry_name({fn.name for fn in module.functions})
     entry = PrimFunction(
         name=name,
