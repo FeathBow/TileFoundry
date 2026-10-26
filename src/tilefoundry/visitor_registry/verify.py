@@ -20,10 +20,13 @@ from tilefoundry.ir.hir.loop_region import LoopRegion
 from tilefoundry.ir.hir.mesh_region import MeshRegion
 from tilefoundry.ir.hir.sharding.mesh_coord import MeshCoord
 from tilefoundry.ir.hir.specialize import canonical_specialization_signature
+from tilefoundry.ir.hir.tensor.slice import Slice
+from tilefoundry.ir.hir.tensor.tuple_get_item import TupleGetItem
 from tilefoundry.ir.module_utils import list_call_paths
 from tilefoundry.ir.pattern import RangePattern, locate_dim_var
 from tilefoundry.ir.tir.launch import Launch
 from tilefoundry.ir.tir.memory import AllocTensor as AllocTensorOp
+from tilefoundry.ir.tir.memory import TensorView
 from tilefoundry.ir.tir.prim_function import PrimFunction
 from tilefoundry.ir.tir.shape import ShapeOf
 from tilefoundry.ir.tir.stmt import Stmt
@@ -65,6 +68,8 @@ from tilefoundry.visitor_registry.instruction import ScheduleRefusal, check_call
 from tilefoundry.visitor_registry.typeinfer import inference_type
 
 _PRIM_FUNCTION = "[tir §1.3](docs/spec/tir.md#13-primfunction)"
+_EVALUATE = "[tir §1.4](docs/spec/tir.md#14-evaluate)"
+_VIEWS = (TensorView, Slice, TupleGetItem)
 
 
 def verify_region_isolated(region: LoopRegion | MeshRegion, ctx=None) -> None:
@@ -520,6 +525,12 @@ def _walk_stmt(stmt, ctx, scope, fn, module_context, binders: _Binders):
                 _verify_retained_call(stmt, fn, module_context, ctx)
             else:
                 op = stmt.callable
+                for i, arg in enumerate(stmt.args):
+                    if isinstance(arg, Call) and isinstance(arg.target, _VIEWS):
+                        raise VerifyError(
+                            f"{type(op).__name__}: arg[{i}] is a {type(arg.target).__name__} "
+                            f"call; {spec_ref_render(_EVALUATE)} requires a LetStmt to bind it first"
+                        )
                 ctx.mesh_scope = tuple(scope)
                 ctx.current_mesh = None
                 for mesh in scope:

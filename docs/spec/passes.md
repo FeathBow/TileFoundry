@@ -308,9 +308,10 @@ class ConvertHIRToTIR(ModulePass):
     Adjacent scopes are not merged. A view is bound in each consuming scope,
     never at its definition; its sharding refers to that scope's mesh.
     Storage declarations follow their HIR definition's scope and position.
-    Constant-address `smem` and scratch-backed `gmem` views are materialized in
-    each consuming scope. Visit memoizes each HIR node's lowered result in the
-    context; forwarded SSA leaves reuse that result. Storage links MUST NOT
+    Constant-address `smem` views, the selected stage of a staged `smem` buffer,
+    and scratch-backed `gmem` views are materialized in each consuming scope.
+    Visit memoizes each HIR node's lowered result in the context; forwarded SSA
+    leaves reuse that result. Storage links MUST NOT
     introduce TensorView wrappers. HIR view operations retain their corresponding
     views, including authored identity views. Instruction operands use the same
     Visit path; only a required issue tile introduces a new operand window.

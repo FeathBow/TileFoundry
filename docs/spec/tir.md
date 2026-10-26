@@ -229,8 +229,11 @@ The `callable` is one of:
   `check_call`: match the execution mesh, project instruction tiles, check
   operand patterns and declared `between` relations, then invoke the optional
   leaf verifier. A context-dependent operand pattern MAY resolve itself against
-  the callable before matching. Host `Launch` instead checks its target,
-  arguments, and launch extents as a function invocation.
+  the callable before matching. An operand MUST NOT be a `TensorView`, `Slice`
+  or `TupleGetItem` call; a `LetStmt` binds it and the Op receives its `Var`.
+  Other expressions, such as scalar arithmetic, MAY appear in place. Host
+  `Launch` instead checks its target, arguments, and launch extents as a
+  function invocation.
 - a `SymbolRef` ([§2.1](#21-symbolref)) — a reference to a callee
   `PrimFunction` in the enclosing `Module`. `args` follow the callee's
   parameter order, the final `output_count` positions binding output

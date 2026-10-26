@@ -373,7 +373,7 @@ persistent loops and buffer placements:
 ```bash
 set -euo pipefail
 tilefoundry schedule finalize optimal.py optimal_tir.py
-sed -n '1,109p' optimal_tir.py
+sed -n '1,121p' optimal_tir.py
 ```
 
 ```text
@@ -436,26 +436,38 @@ class GEMM_8192X17408X5120_OPTIMAL:
                                 layout=((128, 64), (5120, 1)),
                                 shape=(128, 64),
                             )
-                            T.copy_async_tensor(
-                                value,
-                                lhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3],
+                            lhs_ring_1 = T.tensor_view(
+                                T.ptr_of(lhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3]),
+                                layout=Layout(((2, 8, 8), (4, 16)), ((4096, 512, 64), (16, 1))) | Swizzle(3, 4, 3),
+                                shape=(128, 64),
                             )
+                            T.copy_async_tensor(value, lhs_ring_1)
                             value_1 = T.tensor_view(
                                 T.ptr_of(b[k:k + 1, ((task // 16) % 68) * 256:((task // 16) % 68) * 256 + 1]),
                                 layout=((64, 256), (17408, 1)),
                                 shape=(64, 256),
                             )
-                            T.copy_async_tensor(
-                                value_1,
-                                rhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3],
+                            rhs_ring_1 = T.tensor_view(
+                                T.ptr_of(rhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3]),
+                                layout=Layout(((4, 2, 8), (4, 64)), ((4096, 512, 64), (1024, 1))) | Swizzle(3, 4, 3),
+                                shape=(64, 256),
                             )
+                            T.copy_async_tensor(value_1, rhs_ring_1)
                         with Mesh(
                             scope[1:], layout=(2, 4, 8, 4), names=("group", "warp", "lane8", "lane4")
                         ) as scope_3:
                             acc_pointer = T.ptr_of(acc)
+                            lhs_ring_2 = T.tensor_view(
+                                T.ptr_of(lhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3]),
+                                layout=Layout(((2, 8, 8), (4, 16)), ((4096, 512, 64), (16, 1))) | Swizzle(3, 4, 3),
+                                shape=(128, 64),
+                            )
                             unit = scope_3.group
-                            lhs_pointer = T.ptr_of(
-                                lhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3],
+                            lhs_pointer = T.ptr_of(lhs_ring_2)
+                            rhs_ring_2 = T.tensor_view(
+                                T.ptr_of(rhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3]),
+                                layout=Layout(((4, 2, 8), (4, 64)), ((4096, 512, 64), (1024, 1))) | Swizzle(3, 4, 3),
+                                shape=(64, 256),
                             )
                             with Mesh(
                                 scope[1:2], layout=(4, 8, 4), names=("warp", "lane8", "lane4")
@@ -476,7 +488,7 @@ class GEMM_8192X17408X5120_OPTIMAL:
                                     shape=(64, 16),
                                 )
                                 rhs_view = T.tensor_view(
-                                    T.ptr_of(rhs_ring_stages[((((task - cta.persistent) // 132) * 80) + (k // 64)) % 3][0:0 + 16, 0:0 + 256]),
+                                    T.ptr_of(rhs_ring_2[0:0 + 16, 0:0 + 256]),
                                     layout=(Layout(((2, 8), (4, 64)), ((512, 64), (1024, 1))) | Swizzle(3, 4, 3)) @ {B()},
                                     shape=(16, 256),
                                 )

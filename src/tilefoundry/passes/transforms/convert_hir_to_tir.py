@@ -283,6 +283,8 @@ class TirBuilder:
                 type=TupleType(tuple(field.type for field in fields)),
             )
             ctx.builder.bind(stages, Tuple(fields, type=stages.type))
+            field = stages.type.fields[0]
+            zeros = tuple(i64_const(0) for _ in field.shape)
             loops = ctx.storage.placement[id(expr)][1]
             if any(
                 static_dim_value(bound) is None
@@ -305,7 +307,8 @@ class TirBuilder:
                     self.stage_counters[key] = (counter, one)
                 counter, _one = self.stage_counters[key]
                 index = simplify_dim(DimMod, (counter, len(stages.type.fields)))
-                return Call(TupleGetItem(), (stages, index), type=stages.type.fields[0])
+                selected = Call(TupleGetItem(), (stages, index), type=field)
+                return View(selected, zeros, tuple(field.shape), field, stem)
             index = i64_const(0)
             for depth, loop in enumerate(loops):
                 induction = values.get(id(loop.induction_var))
@@ -331,8 +334,8 @@ class TirBuilder:
                 index = ordinal if depth == 0 else simplify_dim(DimAdd, (index, ordinal))
             if loops:
                 index = simplify_dim(DimMod, (index, len(stages.type.fields)))
-            field = stages.type.fields[0]
-            return Call(TupleGetItem(), (stages, index), type=field)
+            selected = Call(TupleGetItem(), (stages, index), type=field)
+            return View(selected, zeros, tuple(field.shape), field, stem)
 
     def value(self, value, *, ctx):
         """Materialize a recipe in its consuming scope without changing it."""
