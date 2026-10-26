@@ -72,11 +72,18 @@ def _define_kernel(fn: ModuleFunction, kernel: CallableSignature, ctx: CudaCodeg
     ctx.reset_barrier_ids()
     ctx.emit(f"__global__ void {kernel.name}({ctx.parameters(kernel)}) {{")
     ctx.indent()
+    ctx.declare_smem_base(lambda scope: _write_kernel_body(fn, kernel, scope))
+    ctx.dedent()
+    ctx.emit("}")
+
+
+def _write_kernel_body(
+    fn: ModuleFunction, kernel: CallableSignature, ctx: CudaCodegenContext
+) -> None:
+    """What the kernel was told, then what it was written to do."""
     if kernel.leading:
         ctx.emit(f"tilefoundry::program_meta({PROGRAM_META.name});")
     ctx.emit_node(fn)
-    ctx.dedent()
-    ctx.emit("}")
 
 
 def _define_launcher(

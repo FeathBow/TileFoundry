@@ -38,7 +38,7 @@ class CudaCodegenContext(EmitContext):
     def bind_extents(self, params) -> None: ...
     def reset_barrier_ids(self) -> None: ...
     def alloc_barrier_id(self) -> int: ...
-    def reset_smem_base(self) -> None: ...
+    def declare_smem_base(self, write: Callable[[CudaCodegenContext], None]) -> None: ...
     def smem_base(self) -> str: ...
     def dtype_to_cpp(self, dtype_name: str) -> str: ...
 ```
@@ -46,9 +46,11 @@ class CudaCodegenContext(EmitContext):
 - constraints:
   - `dynamic_extents` is derived from parameter types by `bind_extents`.
     `launches` records settled launch geometry keyed by `id(fn)`.
-  - `smem_base` declares one byte-addressed dynamic shared-memory base per
-    kernel. Numeric `TensorView` addresses add byte offsets before conversion
-    to CuTe shared-memory pointers.
+  - Each kernel declares one byte-addressed dynamic shared-memory base, ahead
+    of its first statement, when its body names the base through `smem_base`.
+    `declare_smem_base` writes the body first so every scope in the kernel
+    reaches that one declaration. Numeric `TensorView` addresses add byte
+    offsets before conversion to CuTe shared-memory pointers.
   - Handlers obtain target type spellings and hardware counters through the
     context rather than rediscovering them from IR.
 
