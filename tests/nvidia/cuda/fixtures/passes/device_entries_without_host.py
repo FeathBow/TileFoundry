@@ -55,25 +55,20 @@ class _Prototype:
 
 @module(entry="stage_twice", target=_CUDA, topologies=(Topology("thread", 128),))
 class _SharedRing:
-    """A kernel staging through two shared-memory slots; the second ends at byte 1024."""
+    """A kernel declaring two slots of 512 bytes in shared memory; the second ends at byte 1024."""
 
     @prim_func(target=_CUDA)
     def stage_twice(x: Tensor[(128,), "f32"]):
-        with Mesh((Topology("thread", 128),), Layout((128,), (1,))) as thread:
-            view = T.tensor_view(T.ptr_of(x), layout=_rows(128))
-            low = T.tensor_view(0, dtype="f32", storage="smem", layout=_rows(128), shape=(128,))
-            high = T.tensor_view(512, dtype="f32", storage="smem", layout=_rows(128), shape=(128,))
-            T.copy(view, low)
-            T.sync(thread)
-            T.copy(low, view)
-            T.copy(view, high)
-            T.sync(thread)
-            T.copy(high, view)
+        with Mesh((Topology("thread", 128),), Layout((128,), (1,))) as _thread:
+            _slots = (
+                T.tensor_view(0, dtype="f32", storage="smem", layout=_rows(128), shape=(128,)),
+                T.tensor_view(512, dtype="f32", storage="smem", layout=_rows(128), shape=(128,)),
+            )
 
 
 @module(entry="stage", target=_CUDA, topologies=(Topology("thread", 128),))
 class _StagedPrototype:
-    """A prototype whose variants stage through different slots; the farther ends at byte 2560."""
+    """A prototype whose variants declare different slots; the farther ends at byte 2560."""
 
     @prim_func(target=_CUDA)
     def stage(x: Tensor[(_S,), "f32"]):
@@ -81,21 +76,17 @@ class _StagedPrototype:
 
     @stage.specialize(RangePattern("S", 1, 127))
     def near(x: Tensor[(_S,), "f32"]):
-        with Mesh((Topology("thread", 128),), Layout((128,), (1,))) as thread:
-            view = T.tensor_view(T.ptr_of(x), layout=_rows(128), shape=(128,))
-            slot = T.tensor_view(0, dtype="f32", storage="smem", layout=_rows(128), shape=(128,))
-            T.copy(view, slot)
-            T.sync(thread)
-            T.copy(slot, view)
+        with Mesh((Topology("thread", 128),), Layout((128,), (1,))) as _thread:
+            _slot = T.tensor_view(
+                0, dtype="f32", storage="smem", layout=_rows(128), shape=(128,)
+            )
 
     @stage.specialize(RangePattern("S", 128, 255))
     def far(x: Tensor[(_S,), "f32"]):
-        with Mesh((Topology("thread", 128),), Layout((128,), (1,))) as thread:
-            view = T.tensor_view(T.ptr_of(x), layout=_rows(128), shape=(128,))
-            slot = T.tensor_view(2048, dtype="f32", storage="smem", layout=_rows(128), shape=(128,))
-            T.copy(view, slot)
-            T.sync(thread)
-            T.copy(slot, view)
+        with Mesh((Topology("thread", 128),), Layout((128,), (1,))) as _thread:
+            _slot = T.tensor_view(
+                2048, dtype="f32", storage="smem", layout=_rows(128), shape=(128,)
+            )
 
 
 @module(
@@ -109,7 +100,7 @@ class _CtaHalves:
     @prim_func(target=_CUDA)
     def stage_halves(x: Tensor[(128,), "f32"]):
         with Mesh((Topology("cta", 2),), Layout((2,), (1,))) as cta:
-            halves = T.tensor_view(  # noqa: F841
+            _halves = T.tensor_view(
                 0,
                 dtype="f32",
                 storage="smem",
