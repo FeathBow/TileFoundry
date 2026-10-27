@@ -37,6 +37,8 @@ from tilefoundry_nvidia.cuda.codegen.templates import render
 
 Geometry = tuple[tuple[object, object, object], tuple[object, object, object]]
 
+_DEFAULT_DYNAMIC_SMEM = 48 * 1024
+
 
 def _emit_function(fn: ModuleFunction, ctx: CudaCodegenContext) -> LinkableFunction:
     """*fn* in both of its positions, written from the one convention it is called by.
@@ -70,11 +72,18 @@ def _define_kernel(fn: ModuleFunction, kernel: CallableSignature, ctx: CudaCodeg
     ctx.reset_barrier_ids()
     ctx.emit(f"__global__ void {kernel.name}({ctx.parameters(kernel)}) {{")
     ctx.indent()
+    ctx.declare_smem_base(lambda scope: _write_kernel_body(fn, kernel, scope))
+    ctx.dedent()
+    ctx.emit("}")
+
+
+def _write_kernel_body(
+    fn: ModuleFunction, kernel: CallableSignature, ctx: CudaCodegenContext
+) -> None:
+    """What the kernel was told, then what it was written to do."""
     if kernel.leading:
         ctx.emit(f"tilefoundry::program_meta({PROGRAM_META.name});")
     ctx.emit_node(fn)
-    ctx.dedent()
-    ctx.emit("}")
 
 
 def _define_launcher(
@@ -82,8 +91,10 @@ def _define_launcher(
 ) -> None:
     """The ``extern "C"`` entry: the geometry it was handed, spent on one launch.
 
-    It returns the CUDA error text when the device refuses the launch and null otherwise, so
-    the host raises without an exception crossing the C ABI.
+    CUDA grants a kernel 48 KiB of dynamic shared memory unless it opts in to more,
+    so a larger request first raises the kernel's limit to what the launch asks for.
+    It returns the CUDA error text when the device refuses either step and null
+    otherwise, so the host raises without an exception crossing the C ABI.
     """
     ctx.emit(f'extern "C" const char* {launcher.name}({ctx.parameters(launcher, exported=True)}) {{')
     ctx.indent()
@@ -91,6 +102,15 @@ def _define_launcher(
     grid_x, block_x, smem = (signature.name for signature in launcher.trailing)
     ctx.emit(f"dim3 grid({grid_x}, 1, 1);")
     ctx.emit(f"dim3 block({block_x}, 1, 1);")
+    ctx.emit(f"if ({smem} > {_DEFAULT_DYNAMIC_SMEM}) {{")
+    ctx.indent()
+    ctx.emit(
+        f"cudaError_t raised = cudaFuncSetAttribute({kernel.name}, "
+        f"cudaFuncAttributeMaxDynamicSharedMemorySize, {smem});"
+    )
+    ctx.emit("if (raised != cudaSuccess) return cudaGetErrorString(raised);")
+    ctx.dedent()
+    ctx.emit("}")
     ctx.emit(f"{kernel.name}<<<grid, block, {smem}, nullptr>>>({kernel_arguments(kernel, ctx)});")
     ctx.emit("cudaError_t status = cudaGetLastError();")
     ctx.emit("return status == cudaSuccess ? nullptr : cudaGetErrorString(status);")

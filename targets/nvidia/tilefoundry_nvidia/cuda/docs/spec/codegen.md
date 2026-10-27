@@ -12,10 +12,13 @@ body does not implement multi-device execution. Skeletons retain signatures,
 parameter views, specialization dispatch and launchers, replacing statements
 with `// TODO: <fn>`.
 
-The device unit owns kernels and C-ABI launchers. A launcher reads launch
-status immediately and returns the CUDA error text or null. Host entries
-raise on an error; no exception crosses the C ABI and a refused launch never
-returns as though the kernel ran. A host unit MUST NOT reference CUDA or CuTe
+The device unit owns kernels and C-ABI launchers. A launcher asked for more
+than 48 KiB of dynamic shared memory MUST first raise its kernel's
+`cudaFuncAttributeMaxDynamicSharedMemorySize` to that size. A launcher reads
+launch status immediately and returns the CUDA error text or null, including
+when the device refuses the raised limit. Host entries raise on an error; no
+exception crosses the C ABI and a refused launch never returns as though the
+kernel ran. A host unit MUST NOT reference CUDA or CuTe
 types.
 
 CUDA registers the host writer for shared `Launch` at
@@ -35,7 +38,7 @@ class CudaCodegenContext(EmitContext):
     def bind_extents(self, params) -> None: ...
     def reset_barrier_ids(self) -> None: ...
     def alloc_barrier_id(self) -> int: ...
-    def reset_smem_base(self) -> None: ...
+    def declare_smem_base(self, write: Callable[[CudaCodegenContext], None]) -> None: ...
     def smem_base(self) -> str: ...
     def dtype_to_cpp(self, dtype_name: str) -> str: ...
 ```
@@ -43,9 +46,11 @@ class CudaCodegenContext(EmitContext):
 - constraints:
   - `dynamic_extents` is derived from parameter types by `bind_extents`.
     `launches` records settled launch geometry keyed by `id(fn)`.
-  - `smem_base` declares one byte-addressed dynamic shared-memory base per
-    kernel. Numeric `TensorView` addresses add byte offsets before conversion
-    to CuTe shared-memory pointers.
+  - Each kernel declares one byte-addressed dynamic shared-memory base, ahead
+    of its first statement, when its body names the base through `smem_base`.
+    `declare_smem_base` writes the body first so every scope in the kernel
+    reaches that one declaration. Numeric `TensorView` addresses add byte
+    offsets before conversion to CuTe shared-memory pointers.
   - Handlers obtain target type spellings and hardware counters through the
     context rather than rediscovering them from IR.
 
