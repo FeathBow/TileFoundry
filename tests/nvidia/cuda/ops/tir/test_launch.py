@@ -8,6 +8,7 @@ import pytest
 import torch
 
 import tilefoundry
+from tests.nvidia.cuda.ops.tir.targets import CUDA_TARGETS, retarget
 from tilefoundry.cli.source import load_authored_ir
 from tilefoundry.dsl import *
 from tilefoundry.ir.core import Constant, Var, VerifyError
@@ -59,3 +60,17 @@ def test_refused_launch_raises() -> None:
     runtime = tilefoundry.compile(OverAskingLaunch, target=_CUDA)
     with pytest.raises(RuntimeError, match=r"tilefoundry: launch of \w+ failed: "):
         runtime(torch.ones(4, 32, device="cuda"))
+
+
+@pytest.mark.parametrize("target", CUDA_TARGETS)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_launch_lifts_the_dynamic_shared_memory_default(target: CudaTarget) -> None:
+    """An 80 KiB stage runs once its launch asks for 80 KiB and lifts CUDA's 48 KiB default."""
+    WideSharedStage = load_authored_ir(f"{OPS / 'wide_shared_stage.py'}:WideSharedStage")
+    runtime = tilefoundry.compile(retarget(WideSharedStage, target), target=target)
+    torch.manual_seed(5)
+    source = torch.randn(128, 160, dtype=torch.float32, device="cuda")
+    out = torch.empty_like(source)
+    runtime(source, out)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, source, rtol=0, atol=0)

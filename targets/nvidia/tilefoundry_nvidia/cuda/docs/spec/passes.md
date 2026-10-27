@@ -66,5 +66,11 @@ def insert_default_host_entry(module: Module) -> Module:
   - The launch geometry MUST be settled here and written into the `Launch`, so
     nothing downstream derives it again. A prototype states no body of its own,
     so its variants state its geometry and they MUST agree.
+  - The synthesized TIR entry's `Launch` MUST ask for the dynamic shared memory
+    its device function reaches: the farthest byte any integer-address
+    shared-memory `TensorView` of the function or of its variants spans, each
+    view sized as a staged slot reserves it
+    ([analysis §1.2.2](../../../../../../docs/spec/analysis.md#122-memory)), and 0
+    when there is none. An authored host entry keeps the size its author wrote.
   - It MUST reject ambiguous device-function sets, a non-entry CPU function, or
     a launch-provided dynamic CTA extent.
