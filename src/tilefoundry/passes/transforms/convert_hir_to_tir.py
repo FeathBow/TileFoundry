@@ -133,6 +133,11 @@ class View:
     whole_tensor: bool = False
 
 
+def _covers(starts, sizes, shape) -> bool:
+    """Whether a window at *starts* of *sizes* is the whole operand of *shape*."""
+    return tuple(sizes) == tuple(shape) and all(static_dim_value(start) == 0 for start in starts)
+
+
 @dataclass
 class TirScope:
     mesh: Mesh | None = None
@@ -819,11 +824,7 @@ class StoragePlan:
         held = value.type
         if not isinstance(held, TensorType):
             raise LoweringError(f"a tensor window cannot use {held!r} as its base")
-        if (
-            starts is not None
-            and tuple(sizes) == tuple(held.shape)
-            and all(static_dim_value(start) == 0 for start in starts)
-        ):
+        if starts is not None and _covers(starts, sizes, held.shape):
             starts = None
         if starts is None:
             actual = (
@@ -855,7 +856,7 @@ class StoragePlan:
                 f"a rank-{len(held.shape)} buffer is windowed by {len(view.starts)} starts"
             )
         source = base
-        if not view.whole_tensor:
+        if not view.whole_tensor and not _covers(view.starts, view.sizes, held.shape):
             keys = Tuple(view.starts, type=TupleType(tuple(start.type for start in view.starts)))
             source = Call(
                 Slice(sizes=tuple(view.sizes), strides=(1,) * len(view.sizes)),
@@ -1691,20 +1692,23 @@ class Lowering(ValuationVisitor[Expr | View]):
                 for (role, _value), base, desired, starts in zip(
                     issued_operands, locals_, plan.tiles, windows, strict=True
                 ):
-                    keys = Tuple(starts, type=TupleType(tuple(start.type for start in starts)))
-                    window = Call(
-                        Slice(sizes=tuple(desired.shape), strides=(1,) * len(desired.shape)),
-                        (base, keys),
-                        type=desired,
-                    )
-                    inferred = typeinfer_registry.lookup(Slice)(
-                        window,
-                        TypeInferContext(
-                            memo={id(arg): (arg, arg.type) for arg in (base, *starts)},
-                            loops=ctx.builder.loops,
-                        ),
-                    )
-                    window.type = getattr(inferred, "type", inferred)
+                    if _covers(starts, desired.shape, base.type.shape):
+                        window = base
+                    else:
+                        keys = Tuple(starts, type=TupleType(tuple(start.type for start in starts)))
+                        window = Call(
+                            Slice(sizes=tuple(desired.shape), strides=(1,) * len(desired.shape)),
+                            (base, keys),
+                            type=desired,
+                        )
+                        inferred = typeinfer_registry.lookup(Slice)(
+                            window,
+                            TypeInferContext(
+                                memo={id(arg): (arg, arg.type) for arg in (base, *starts)},
+                                loops=ctx.builder.loops,
+                            ),
+                        )
+                        window.type = getattr(inferred, "type", inferred)
                     item = window
                     if window.type != desired:
                         pointer = Call(
@@ -1727,6 +1731,8 @@ class Lowering(ValuationVisitor[Expr | View]):
                         )
                     issued.append(
                         ctx.builder.bind(Var(ctx.names.fresh(f"{role}_view"), type=item.type), item)
+                        if isinstance(item, Call)
+                        else item
                     )
                 ctx.builder.add(Evaluate(op, tuple(issued)))
         result_param = next(param for param in params if param.effect & MemoryEffect.WRITE)

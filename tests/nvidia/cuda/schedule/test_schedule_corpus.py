@@ -11,6 +11,7 @@ from types import MappingProxyType
 import pytest
 import torch
 
+import tilefoundry
 from tests.core._corpus import Case, Problems, case, cases, reload
 from tests.nvidia.cuda.schedule._plain import SiteCounts, check_plain_report
 from tests.nvidia.cuda.schedule._support import (
@@ -988,6 +989,24 @@ class WgmmaTma3Stage(ScheduleCase):
 
 
 @case
+class Sm89E4m3Gemm(ScheduleCase):
+    path: Path = ROOT / "hir/sm89_e4m3_gemm.py"
+    smem_peak: int = 512
+    rmem_peaks: Mapping[str, RmemPeak] = MappingProxyType(
+        {
+            "thread@0:32#0": RmemPeak(
+                1_280,
+                "512-byte f32 accumulator plus 512-byte lhs and 256-byte rhs e4m3 fragments",
+            ),
+        }
+    )
+    candidates_refusal: str | None = "source has no unscheduled candidate site"
+
+    def guard(self, state, problems):
+        tilefoundry.compile(state.lowered)
+
+
+@case
 class ZeroTripInsertSlice(ScheduleCase):
     path: Path = ROOT / "hir/zero_trip_insert_slice.py"
     rmem_peaks: Mapping[str, RmemPeak] = MappingProxyType(
@@ -1161,16 +1180,6 @@ EXPECTED = {
             ),
             "thread@0:64#0": RmemPeak(1_280, "parent envelope of accumulator/fragments"),
         },
-    ),
-    "hir/sm89_e4m3_gemm": dict(
-        smem_peak=512,
-        rmem_peaks={
-            "thread@0:32#0": RmemPeak(
-                1_280,
-                "512-byte f32 accumulator plus 512-byte lhs and 256-byte rhs e4m3 fragments",
-            ),
-        },
-        candidates_refusal="source has no unscheduled candidate site",
     ),
     "hir/sparse_decode": dict(
         smem_peak=16_384,

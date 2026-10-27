@@ -373,7 +373,7 @@ persistent loops and buffer placements:
 ```bash
 set -euo pipefail
 tilefoundry schedule finalize optimal.py optimal_tir.py
-sed -n '1,110p' optimal_tir.py
+sed -n '1,109p' optimal_tir.py
 ```
 
 ```text
@@ -470,7 +470,6 @@ class GEMM_8192X17408X5120_OPTIMAL:
                                     layout=Layout(((8, 8), (4, 16)), ((512, 64), (16, 1))) + (4096 * unit) | Swizzle(3, 4, 3),
                                     shape=(64, 64),
                                 )
-                                acc_view = acc_local[0:0 + 64, 0:0 + 256]
                                 lhs_view = T.tensor_view(
                                     T.ptr_of(lhs_local[0:0 + 64, 0:0 + 16]),
                                     layout=(Layout(((8, 8), 16), ((512, 64), 1)) + (4096 * unit) | Swizzle(3, 4, 3)) @ {B()},
@@ -482,7 +481,7 @@ class GEMM_8192X17408X5120_OPTIMAL:
                                     shape=(16, 256),
                                 )
                                 T.tiled_mma(
-                                    acc_view,
+                                    acc_local,
                                     lhs_view,
                                     rhs_view,
                                     atom=T.cuda.sm90.Wgmma(n=256, dtype="bf16", form=T.cuda.sm90.Form.SS, a_major=T.cuda.sm90.Major.K, b_major=T.cuda.sm90.Major.MN),

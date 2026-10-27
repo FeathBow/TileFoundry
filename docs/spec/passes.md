@@ -314,6 +314,9 @@ class ConvertHIRToTIR(ModulePass):
     introduce TensorView wrappers. HIR view operations retain their corresponding
     views, including authored identity views. Instruction operands use the same
     Visit path; only a required issue tile introduces a new operand window.
+    A window that starts at zero and spans its operand's shape is the operand
+    itself. Lowering issues that operand, or its own pointer where the window
+    takes another type, and builds no `Slice` for it.
     Lowering MUST obtain storage answers from StoragePlan, the sole reader of analysis
     storage metadata in this pass. The context reads `MemoryMetadata.offsets`,
     accepted links in AllocationSummaryMetadata.values, and the unchanged
