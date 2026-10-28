@@ -202,6 +202,9 @@ def load_targets() -> Mapping[str, type[Target]]: ...
   - `EmitContext`, `LinkableModule`, `LinkedFunction` and `LinkedModule` MAY be
     subclassed and bound with `@bind(TargetClass, BaseClass)`. The implementation's
     `create(target, *args)` MUST provide the instance selected by `resolve`.
+    `InsertHostEntryPass` and `ConvertHIRToTIR` MAY be bound the same way; their
+    `create` takes the Target and the `CodegenOptions`
+    ([passes §7](./passes.md#7-implemented-passes)).
     `LinkableModule.link(project)` MUST contribute source and build settings to
     the shared `CMakeProject`; core MUST build the combined project once.
     `LinkableFunction` and whole-program `CodegenContext` MAY be subclassed, but

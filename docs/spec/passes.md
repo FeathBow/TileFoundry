@@ -71,7 +71,7 @@ class Pass(ABC):
 Runs over the whole `Module` and may add / remove / reorder
 functions. Examples: module-level inline, dead-function elimination,
 synthesizing an entry the module does not yet declare
-([§7.3](#73-insert_default_host_entry)).
+([§7.3](#73-inserthostentrypass)).
 
 ```python
 class ModulePass(Pass):
@@ -194,12 +194,13 @@ def build(mod: Module, /, *, target: Target | None = None) -> RuntimeModule: ...
 def compile(mod: Module, /, *, target: Target | None = None) -> RuntimeModule: ...
 ```
 
-`build` takes a TIR `Module`, runs the pipeline over it, then codegen →
-toolchain link → loader, and returns a `RuntimeModule`
+`build` takes a TIR `Module` whose `Module.entry` is a CPU host entry, then
+codegen → toolchain link → loader, and returns a `RuntimeModule`
 ([runtime](./runtime.md)). It requires the Module to own its Target; an
 explicit Target that disagrees with the declared one is an error.
 
-`compile` is `build`. The `jit` convenience and cache contract are owned by
+`compile` runs `default_pipeline` over the Module, then `build`. Finalize and
+scaffold run the same `default_pipeline`. The `jit` convenience and cache contract are owned by
 [runtime §1.6](./runtime.md#16-compilepy).
 
 ### Dirty-scope retype / verify
@@ -231,28 +232,37 @@ unified retype / verify is scheduled by `PassManager`.
 class ConvertHIRToTIR(ModulePass):
     """Replace one selected scheduled HIR entry with verified TIR."""
 
-    analyzed: AnalysisResult
-    authored: Function
+    visitor: ClassVar[type[Lowering]] = Lowering
+    options: CodegenOptions = CodegenOptions()
     name: str = "convert-hir-to-tir"
     requires: tuple[str, ...] = ()
 
+    @classmethod
+    def create(cls, target: Target, options: CodegenOptions) -> ConvertHIRToTIR: ...
     def run(self, module: Module) -> Module: ...
 ```
 
 - constraints:
-  - The pass receives the result of `analyze(..., analysis=("memory",))` on a
-    checked program and never checks or analyzes again; it lowers that result's
-    Module, in place, and its retained calls. A result whose `executed` lacks
-    `memory`, or whose Module is not the one the pass receives, raises
-    `LoweringError`. `PassPoint.BEFORE_LOWER` passes run after that analysis and
-    before this pass. The authored function is
-    retained separately so `BindingMetadata`, keyed by `SourceSpanMetadata`,
-    remains the source of user-facing names after analysis has assigned its own
-    internal bindings.
+  - The pass lowers the device root of the Module it receives, in place, and
+    its retained calls. That function MUST carry the memory analysis
+    (`AllocationSummaryMetadata`); otherwise the pass raises `LoweringError`. It
+    never checks or analyzes again, and it takes nothing but configuration at
+    construction. Generated names come from the `BindingMetadata` on that IR.
+  - A Target MAY bind a subclass with `@bind(TargetClass, ConvertHIRToTIR)`;
+    finalization obtains the pass through `Target.resolve(ConvertHIRToTIR)`. The
+    entry function and every callee are lowered by the same `visitor` class.
+  - The pass lowers the device root: the callee of the `Launch` in `Module.entry`
+    when that entry is a CPU host, otherwise `Module.entry` itself. It returns the
+    Module unchanged under `CodegenOptions(emit="skeleton")` or when the Module
+    has no HIR function. When lowering HIR from a CPU host root, exactly one
+    `Launch` MUST resolve to an HIR function; otherwise `LoweringError` names
+    the host and the number of such launches.
   - Address placement comes only from `MemoryMetadata`: integer shared-memory
     addresses are byte offsets, and every analyzed offset becomes one concrete
-    buffer view. Multiple offsets form a staged tuple declared outside the
-    outermost enclosing HIR loop. Selection uses the linear iteration ordinal
+    buffer view. Multiple offsets bind one view per offset and one tuple of
+    those views outside the outermost enclosing HIR loop; each consuming scope
+    binds the selected stage `stages[index]` once. The index is the linear
+    iteration ordinal
     from outermost to innermost, modulo the number of buffers, when inner loop
     trip counts are constant. Otherwise selection uses a rank-0 integer register
     counter modulo the number of buffers. It is initialized to zero before the
@@ -421,17 +431,34 @@ def target_passes(module: Module, point: PassPoint) -> list[ModulePass]: ...
     targets by registered name and preserve registration order within a target.
   - A pass class MUST be registered at most once per point; a duplicate MUST
     raise `ValueError` naming the Target and pass.
-  - Finalization MUST run target passes before and after HIR-to-TIR lowering.
-    Compile and scaffold MUST run target passes at `BEFORE_CODEGEN`.
+  - Finalize, compile and scaffold MUST run the same pass list: `BEFORE_LOWER`
+    target passes, `InsertHostEntryPass`, `ConvertHIRToTIR`, `AFTER_LOWER` target
+    passes, `BEFORE_CODEGEN` target passes. Scaffold passes `CodegenOptions(emit="skeleton")`.
 
-### 7.3 `insert_default_host_entry`
+### 7.3 `InsertHostEntryPass`
 
-A target may register a `BEFORE_CODEGEN` pass that gives a device-only Module
-host-callable entries. The target owns the supported device shapes and launch
-geometry; compile and scaffold select the pass through `target_passes`.
+```python
+class InsertHostEntryPass(ModulePass):
+    name: str = "insert-host-entry"
+    requires: tuple[str, ...] = ()
+
+    @classmethod
+    def create(cls, target: Target, options: CodegenOptions) -> InsertHostEntryPass: ...
+    def run(self, module: Module) -> Module: ...
+```
+
+Core defines the pass with `create(target, options)`; its default `run` returns
+its Module unchanged. A Target MAY bind a subclass with
+`@bind(TargetClass, InsertHostEntryPass)`; `default_pipeline` obtains it through
+`Target.resolve(InsertHostEntryPass, options)`. It runs after `BEFORE_LOWER`
+target passes and before `ConvertHIRToTIR`. The target owns the supported device
+shapes and launch geometry. A TIR Module receives no entry: one without a CPU
+entry is rejected by compile.
 
 - constraints:
   - An existing CPU entry MUST pass through unchanged.
+  - A synthesized `Launch` MUST state the analyzed shared-memory peak as
+    `dynamic_smem`, and 0 when the Module carries no memory analysis.
   - Normalization MUST preserve each authored function's Target.
   - A synthesized `Launch` MUST carry its settled geometry so downstream
     codegen reads it without deriving it again.

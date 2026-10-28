@@ -88,14 +88,9 @@ class CppEmitter(StmtVisitor[None]):
         self.statement("__trap()")
 
     def visit_LetStmt(self, node: LetStmt) -> None:
-        """Emit a stored call result, or pass through a structural tuple binding.
-
-        A Tuple has no storage of its own. Its consumers lower the elements
-        directly, so its authored name is absent from generated C++ and each
-        TupleGetItem use may materialize its own target-side aggregate.
-        """
+        """Emit a call result or let the target materialize a tuple binding."""
         if isinstance(node.value, Tuple):
-            self.context.register_tuple(node.var, node.value)
+            self.context.handler_for(Tuple)(node, self.context)
             return
         if not isinstance(node.value, Call):
             raise RuntimeError(

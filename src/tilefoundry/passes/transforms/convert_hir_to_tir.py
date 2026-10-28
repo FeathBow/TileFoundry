@@ -12,18 +12,19 @@ from dataclasses import dataclass, field, replace
 from functools import cached_property
 from itertools import product
 from math import prod
+from typing import ClassVar
 
 import isl
 
-from tilefoundry.analysis import AnalysisResult, MemoryMetadata
+from tilefoundry.analysis import MemoryMetadata
 from tilefoundry.analysis.access import AliasKind, buffer_alias, forwarded_leaves
 from tilefoundry.analysis.allocation import AllocationSummaryMetadata
+from tilefoundry.codegen.options import CodegenOptions
 from tilefoundry.ir.core import (
     BindingMetadata,
     Call,
     Constant,
     Expr,
-    SourceSpanMetadata,
     Tuple,
     Var,
     get_metadata,
@@ -31,7 +32,7 @@ from tilefoundry.ir.core import (
 )
 from tilefoundry.ir.core.expr import SSAValue
 from tilefoundry.ir.core.kinds import BinaryKind
-from tilefoundry.ir.core.module import Module
+from tilefoundry.ir.core.module import Module, resolve_symbol
 from tilefoundry.ir.core.param_def import MemoryEffect
 from tilefoundry.ir.hir.function import Function
 from tilefoundry.ir.hir.loop_region import LoopRegion
@@ -39,14 +40,16 @@ from tilefoundry.ir.hir.math.binary import Binary as HirBinary
 from tilefoundry.ir.hir.mesh_region import MeshRegion
 from tilefoundry.ir.hir.schedule import ScheduleOp
 from tilefoundry.ir.hir.sharding.mesh_coord import MeshCoord
-from tilefoundry.ir.hir.specialize import origin_of
 from tilefoundry.ir.hir.tensor.slice import Slice
 from tilefoundry.ir.hir.tensor.tuple_get_item import TupleGetItem
 from tilefoundry.ir.isl_interop import isl_to_dim, layout_to_isl_map
+from tilefoundry.ir.module_utils import list_call_paths
 from tilefoundry.ir.tir.arith import Binary as TirBinary
+from tilefoundry.ir.tir.launch import Launch
 from tilefoundry.ir.tir.memory import AllocTensor, Copy, Fill, PtrOf, TensorView
 from tilefoundry.ir.tir.prim_function import PrimFunction
 from tilefoundry.ir.tir.stmts import Evaluate, For, LetStmt, MeshScope, Sequential
+from tilefoundry.ir.tir.symbol_ref import symbol_ref
 from tilefoundry.ir.types import (
     Broadcast,
     ComposedLayout,
@@ -85,8 +88,9 @@ from tilefoundry.ir.types.utils import (
     participant_layout,
     static_dim_value,
 )
-from tilefoundry.ir.visitor import collect_exprs, expr_children
+from tilefoundry.ir.visitor import StmtMutator, collect_exprs, expr_children
 from tilefoundry.passes.pass_base import ModulePass
+from tilefoundry.target import CpuTarget
 from tilefoundry.utils.isl_utils import as_multi_aff
 from tilefoundry.visitor_registry.access_relation import (
     AccessRelation,
@@ -232,7 +236,7 @@ class TirBuilder:
             storage_type = replace(type_, layout=layout)
             stem = ctx.names.fresh(
                 expr.name if isinstance(expr, Var) else "value",
-                ctx.authored_values.get(id(expr)),
+                expr,
             )
             if type_.storage is StorageKind.RMEM:
                 storage_type = type_
@@ -274,15 +278,15 @@ class TirBuilder:
                 )
                 view = View(scratch, (i64_const(0),), (elements,), storage_type, stem)
                 return view
-            fields = tuple(ctx.storage.view(offset, None, storage_type) for offset in offsets)
-            if len(fields) == 1:
-                view = View(fields[0].args[0], (), tuple(storage_type.shape), storage_type, stem)
-                return view
-            stages = Var(
-                ctx.names.fresh(f"{stem}_stages"),
-                type=TupleType(tuple(field.type for field in fields)),
+            if len(offsets) == 1:
+                pointer = Constant(offsets[0], type=PointerType(storage_type.dtype, storage_type.storage))
+                return View(pointer, (), tuple(storage_type.shape), storage_type, stem)
+            fields = tuple(
+                self.bind(Var(ctx.names.fresh(stem), type=storage_type), ctx.storage.view(offset, None, storage_type))
+                for offset in offsets
             )
-            ctx.builder.bind(stages, Tuple(fields, type=stages.type))
+            stages = Var(ctx.names.fresh(f"{stem}_stages"), type=TupleType(tuple(field.type for field in fields)))
+            self.bind(stages, Tuple(fields, type=stages.type))
             loops = ctx.storage.placement[id(expr)][1]
             if any(
                 static_dim_value(bound) is None
@@ -304,35 +308,35 @@ class TirBuilder:
                             )
                     self.stage_counters[key] = (counter, one)
                 counter, _one = self.stage_counters[key]
-                index = simplify_dim(DimMod, (counter, len(stages.type.fields)))
-                return Call(TupleGetItem(), (stages, index), type=stages.type.fields[0])
-            index = i64_const(0)
-            for depth, loop in enumerate(loops):
-                induction = values.get(id(loop.induction_var))
-                if not isinstance(induction, Var):
-                    raise LoweringError(f"{_label(expr)} staged selection has no owning induction")
-                start = static_dim_value(loop.start)
-                stop = static_dim_value(loop.extent)
-                step = static_dim_value(loop.step)
-                if step is None:
-                    raise LoweringError(
-                        f"{_label(expr)} staged selection needs a literal step for "
-                        f"{loop.induction_var.name!r}"
+                index = simplify_dim(DimMod, (counter, len(offsets)))
+            else:
+                index = i64_const(0)
+                for depth, loop in enumerate(loops):
+                    induction = values.get(id(loop.induction_var))
+                    if not isinstance(induction, Var):
+                        raise LoweringError(f"{_label(expr)} staged selection has no owning induction")
+                    start = static_dim_value(loop.start)
+                    stop = static_dim_value(loop.extent)
+                    step = static_dim_value(loop.step)
+                    if step is None:
+                        raise LoweringError(
+                            f"{_label(expr)} staged selection needs a literal step for "
+                            f"{loop.induction_var.name!r}"
+                        )
+                    if depth:
+                        trips = max(0, (stop - start + step - 1) // step)
+                        index = simplify_dim(DimMul, (index, trips))
+                    moved = (
+                        induction
+                        if start == 0
+                        else simplify_dim(DimSub, (induction, values[id(loop.start)]))
                     )
-                if depth:
-                    trips = max(0, (stop - start + step - 1) // step)
-                    index = simplify_dim(DimMul, (index, trips))
-                moved = (
-                    induction
-                    if start == 0
-                    else simplify_dim(DimSub, (induction, values[id(loop.start)]))
-                )
-                ordinal = moved if step == 1 else simplify_dim(DimFloorDiv, (moved, step))
-                index = ordinal if depth == 0 else simplify_dim(DimAdd, (index, ordinal))
-            if loops:
-                index = simplify_dim(DimMod, (index, len(stages.type.fields)))
-            field = stages.type.fields[0]
-            return Call(TupleGetItem(), (stages, index), type=field)
+                    ordinal = moved if step == 1 else simplify_dim(DimFloorDiv, (moved, step))
+                    index = ordinal if depth == 0 else simplify_dim(DimAdd, (index, ordinal))
+                if loops:
+                    index = simplify_dim(DimMod, (index, len(offsets)))
+            selected = Call(TupleGetItem(), (stages, index), type=storage_type)
+            return View(selected, (), tuple(storage_type.shape), storage_type, stem)
 
     def value(self, value, *, ctx):
         """Materialize a recipe in its consuming scope without changing it."""
@@ -403,8 +407,8 @@ class Names:
 
     used: set[str]
 
-    def fresh(self, stem: str, authored=None) -> str:
-        binding = get_metadata(authored, BindingMetadata) if authored is not None else None
+    def fresh(self, stem: str, expr=None) -> str:
+        binding = get_metadata(expr, BindingMetadata) if expr is not None else None
         stem = binding.name if binding is not None else stem
         if stem not in self.used:
             self.used.add(stem)
@@ -415,22 +419,6 @@ class Names:
         result = f"{stem}_{index}"
         self.used.add(result)
         return result
-
-    def pair(self, expr: Expr, ctx) -> None:
-        authored = ctx.authored_values.get(id(expr))
-        if authored is None:
-            return
-        actual_children = expr_children(expr)
-        authored_children = expr_children(authored)
-        if len(actual_children) != len(authored_children):
-            return
-        for actual, source in zip(actual_children, authored_children, strict=True):
-            actual_span = get_metadata(actual, SourceSpanMetadata)
-            source_span = get_metadata(source, SourceSpanMetadata)
-            if type(actual) is type(source) and (
-                actual_span is None or source_span is None or actual_span == source_span
-            ):
-                ctx.authored_values[id(actual)] = source
 
 
 def _label(call: Expr) -> str:
@@ -850,6 +838,8 @@ class StoragePlan:
         desired = view.type
         if isinstance(base, Constant) and isinstance(base.type, PointerType):
             return self.view(base.value, None, desired)
+        if isinstance(base, Call) and isinstance(base.target, TupleGetItem):
+            return base
         held = base.type
         if len(view.starts) != len(held.shape):
             raise LoweringError(
@@ -1137,7 +1127,6 @@ class LoweringContext(TypeInferContext):
     scratch: list[Var] = field(default_factory=list)
     allocations: dict = field(default_factory=dict)
     parameters: dict = field(default_factory=dict)
-    authored_values: dict = field(default_factory=dict)
 
     def value(self, leaf):
         result = self.memo[id(leaf.expr)][1]
@@ -1243,7 +1232,6 @@ class Lowering(ValuationVisitor[Expr | View]):
     """Mechanical lowering of one analyzed HIR function."""
 
     context: TypeInferContext
-    authored: Function
     callees: dict[int, Lowering] = field(default_factory=dict)
 
     def visit(self, expr, ctx=None, *, dimension=False):
@@ -1265,7 +1253,6 @@ class Lowering(ValuationVisitor[Expr | View]):
         known = ctx.memo.get(id(expr))
         if known is not None:
             return known[1]
-        ctx.names.pair(expr, ctx)
         if isinstance(expr, Constant):
             return expr
         if isinstance(expr, Var) and id(expr) not in self._memo:
@@ -1291,13 +1278,11 @@ class Lowering(ValuationVisitor[Expr | View]):
                 self.context.function, self.context, self.context.current_mesh
             ),
             builder=TirBuilder([TirScope(region=self.context.function)]),
-            names=Names({param.name for param in self.authored.params}),
+            names=Names({param.name for param in self.context.function.params}),
             issues=IssuePlan(),
         )
         ctx = self.context
         ctx.memo = self._memo
-        if ctx.function.body is not None and self.authored.body is not None:
-            ctx.authored_values[id(ctx.function.body)] = self.authored.body
         self.locations = self.index_contexts(ctx.function, self.context)
         for param in ctx.function.params:
             physical = Var(param.name, type=param.type, is_const=param.is_const)
@@ -1450,9 +1435,8 @@ class Lowering(ValuationVisitor[Expr | View]):
         frame = ctx._callee_context(call)
         lowering = self.callees.get(id(frame.function))
         if lowering is None:
-            lowering = Lowering(
+            lowering = type(self)(
                 TypeInferContext(module=frame.module, function=frame.function, target=frame.target, topologies=frame.topologies, owner=frame.function, current_mesh=ctx.current_mesh),
-                origin_of(frame.function) or frame.function,
                 self.callees,
             )
             lowering.lowered = lowering.run()
@@ -1743,32 +1727,98 @@ class Lowering(ValuationVisitor[Expr | View]):
         return written
 
 
+def _relaunch(fn, launches):
+    """Retype host launches and forward the scratch parameters lowering appended."""
+    if not isinstance(fn, PrimFunction):
+        return fn
+    params = list(fn.params)
+    names = Names({param.name for param in params})
+
+    class Relaunch(StmtMutator):
+        def visit_Evaluate(self, stmt):
+            if not isinstance(stmt.callable, Launch):
+                return stmt
+            ref = stmt.args[0]
+            lowering = launches.get(".".join((*ref.nested, ref.name)))
+            if lowering is None:
+                return stmt
+            scratch = tuple(
+                Var(names.fresh(param.name), type=param.type)
+                for param in lowering.context.scratch
+            )
+            inputs = len(lowering.context.function.params)
+            outputs = len(params) - fn.output_count
+            params[outputs:outputs] = scratch
+            return replace(
+                stmt,
+                args=(
+                    symbol_ref(lowering.lowered, ".".join((*ref.nested, ref.name))),
+                    *stmt.args[1:7 + inputs],
+                    *scratch,
+                    *stmt.args[7 + inputs:],
+                ),
+            )
+
+    body = Relaunch().visit(fn.body)
+    return replace(fn, params=tuple(params), body=body) if body is not fn.body else fn
+
+
+def _device_root(module):
+    function = module.entry_function()
+    if isinstance(function, PrimFunction) and isinstance(function.target, CpuTarget):
+        callees = (
+            resolve_symbol(module, stmt.args[0].name, nested=stmt.args[0].nested)
+            for stmt in function.body
+            if isinstance(stmt, Evaluate) and isinstance(stmt.callable, Launch)
+        )
+        roots = tuple(callee for callee in callees if isinstance(callee, Function))
+        if len(roots) != 1:
+            raise LoweringError(
+                f"host {function.name!r} launches {len(roots)} HIR functions; expected exactly one"
+            )
+        return roots[0]
+    return function
+
+
 @dataclass
 class ConvertHIRToTIR(ModulePass):
     """Replace one selected HIR entry with its scheduled TIR function."""
 
-    analyzed: AnalysisResult
-    authored: Function
+    visitor: ClassVar[type[Lowering]] = Lowering
+    options: CodegenOptions = CodegenOptions()
 
     name = "convert-hir-to-tir"
     requires = ()
 
+    @classmethod
+    def create(cls, target, options) -> ConvertHIRToTIR:
+        """Create the configured pass selected by a Target."""
+        return cls(options)
+
     def run(self, module: Module) -> Module:
-        result = self.analyzed
-        if "memory" not in result.executed or module is not result.module:
+        if self.options.emit == "skeleton" or not any(
+            isinstance(frame.function, Function) for frame in list_call_paths(module).values()
+        ):
+            return module
+        function = _device_root(module)
+        if get_metadata(function, AllocationSummaryMetadata) is None:
             raise LoweringError(
                 "finalize needs the result of analyze(..., analysis=('memory',)) on a checked program"
             )
         lowered = {}
-        lowering = Lowering(
+        lowering = self.visitor(
             TypeInferContext(
-                module=result.module, function=result.function, owner=result.function
+                module=module, function=function, owner=function
             ),
-            self.authored,
             lowered,
         )
         lowering.lowered = lowering.run()
-        lowered[id(result.function)] = lowering
+        lowered[id(function)] = lowering
+        launches = {
+            path: lowered[id(frame.function)]
+            for path, frame in list_call_paths(module).items()
+            if id(frame.function) in lowered
+        }
         modules = set()
 
         def lower_module(node):
@@ -1781,9 +1831,10 @@ class ConvertHIRToTIR(ModulePass):
             node.functions = tuple(
                 lowered[id(fn)].lowered if id(fn) in lowered else fn for fn in node.functions
             )
+            node.functions = tuple(_relaunch(fn, launches) for fn in node.functions)
 
-        lower_module(result.module)
-        return result.module
+        lower_module(module)
+        return module
 
 
 __all__ = ["ConvertHIRToTIR", "LoweringError"]

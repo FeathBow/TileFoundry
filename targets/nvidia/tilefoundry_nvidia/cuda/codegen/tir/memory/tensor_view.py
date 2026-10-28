@@ -10,11 +10,10 @@ from dataclasses import replace
 from functools import reduce
 from operator import mul
 
-from tilefoundry.ir.core import Call, Constant, Tuple, Var
+from tilefoundry.ir.core import Call, Constant, Tuple
 from tilefoundry.ir.core.kinds import ReduceKind
 from tilefoundry.ir.hir.sharding.mesh_coord import MeshCoord
 from tilefoundry.ir.hir.tensor.slice import Slice
-from tilefoundry.ir.hir.tensor.tuple_get_item import TupleGetItem
 from tilefoundry.ir.tir.memory.ptr_of import PtrOf
 from tilefoundry.ir.tir.memory.tensor_view import TensorView
 from tilefoundry.ir.tir.stmts import LetStmt
@@ -49,7 +48,6 @@ from tilefoundry_nvidia.cuda.codegen.tir.stmts.mesh_scope import (
     mesh_type,
     program_topologies,
 )
-from tilefoundry_nvidia.cuda.codegen.tir.tuple_get_item import constant_index, render_tuple_choice
 
 
 def _swizzle_args(swizzle) -> str:
@@ -383,53 +381,6 @@ def _tensor_ref(var, ctx: CudaCodegenContext) -> str:
     return f"{name}_tensor" if ctx.is_kernel_param(var) else name
 
 
-def _tensor_value_ref(element, ctx: CudaCodegenContext) -> str:
-    """The tensor one tuple element names: its bound name, or the view it calls.
-
-    An inline ``T.tensor_view(...)`` element has no binding of its own -- a
-    Tuple lowers at its consumers -- so the view expression is rendered in
-    place, in the words a plain ``TensorView`` let would have used.
-    """
-    if isinstance(element, Call) and isinstance(element.target, TensorView):
-        pointer_ref, _ = _pointer_ref(element.args[0], ctx)
-        layout = element.target.layout
-        if isinstance(layout, SL):
-            raise NotImplementedError(
-                "CUDA TupleGetItem pointer: an inline shard-layout tensor_view "
-                "element emits several statements and has no inline expression"
-            )
-        return f"tilefoundry::ops::tensor_view({pointer_ref}, {_plain_layout_value(layout)})"
-    return _tensor_ref(element, ctx)
-
-
-def _tuple_pointer_ref(call: Call, ctx: CudaCodegenContext) -> tuple[str, object | None]:
-    """Render a pointer chosen among a tuple's elements.
-
-    A constant index is decided here; anything else is decided on the card as
-    one array subscript, over the elements' tensors with ``.data()`` taking
-    the chosen one's pointer, or over the pointers themselves when the
-    elements name raw smem offsets. A runtime choice has no single syntactic
-    source, so no ``memory_var`` comes back for the coordinate forms to bind
-    to.
-    """
-    held, index = call.args
-    if isinstance(held, Var):
-        held = ctx.tuple_for(held)
-    if not isinstance(held, Tuple):
-        raise ValueError("CUDA TupleGetItem pointer requires a tuple value")
-    if isinstance(index, Constant):
-        selected = constant_index(index)
-        return _pointer_ref(Call(PtrOf(), (held.elements[selected],), type=call.type), ctx)
-    if any(isinstance(element, Constant) for element in held.elements):
-        refs = tuple(
-            _pointer_ref(Call(PtrOf(), (element,), type=call.type), ctx)[0]
-            for element in held.elements
-        )
-        return render_tuple_choice(refs, index, ctx), None
-    tensors = tuple(_tensor_value_ref(element, ctx) for element in held.elements)
-    return f"{render_tuple_choice(tensors, index, ctx)}.data()", None
-
-
 def _pointer_ref(pointer, ctx: CudaCodegenContext) -> tuple[str, object | None]:
     """Render a TensorView pointer and return its syntactic source tensor, if any."""
     if isinstance(pointer, Call) and isinstance(pointer.target, PtrOf):
@@ -445,8 +396,6 @@ def _pointer_ref(pointer, ctx: CudaCodegenContext) -> tuple[str, object | None]:
             offset = f"{_plain_layout_value(layout)}(cute::make_coord({coords}))"
             pointer, root = _pointer_ref(Call(PtrOf(), (base,), type=pointer.type), ctx)
             return f"({pointer} + {offset})", root
-        if isinstance(source, Call) and isinstance(source.target, TupleGetItem):
-            return _tuple_pointer_ref(source, ctx)
         if isinstance(source, Call) and isinstance(source.target, TensorView):
             return _pointer_ref(source.args[0], ctx)
         if isinstance(source, Constant):

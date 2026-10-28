@@ -46,7 +46,7 @@ def _index(expr, ctx: CudaCodegenContext) -> str:
     )
 
 
-def constant_index(index: Constant) -> int:
+def _constant_index(index: Constant) -> int:
     """The element a constant TupleGetItem index selects."""
     selected = index.value
     if not isinstance(selected, int) or isinstance(selected, bool):
@@ -54,29 +54,23 @@ def constant_index(index: Constant) -> int:
     return selected
 
 
-def render_tuple_choice(rendered: tuple[str, ...], index, ctx: CudaCodegenContext) -> str:
-    """One runtime choice among *rendered* elements, subscripted by *index*.
-
-    The choice is decided on the card: one ``cute::array`` of the elements,
-    subscripted by the index this function renders. ``cute::array`` has no
-    deduction guide, so the element type and count come from the first
-    element's spelling.
-    """
-    array = f"cute::array<decltype({rendered[0]}), {len(rendered)}>{{{', '.join(rendered)}}}"
-    return f"{array}[{_index(index, ctx)}]"
+@register_codegen(CudaTarget, Role.EMIT, Tuple)
+def _bind_tuple(let_stmt, ctx: CudaCodegenContext) -> None:
+    """Declare one C++ variable for every tuple binding."""
+    elements = let_stmt.value.elements
+    rendered = tuple(_value(element, ctx) for element in elements)
+    name, values = ctx.name_for(let_stmt.var), ", ".join(rendered)
+    if elements and all(element.type == elements[0].type for element in elements[1:]):
+        ctx.emit(f"cute::array<decltype({rendered[0]}), {len(elements)}> {name}{{{values}}};")
+    else:
+        ctx.emit(f"auto {name} = cute::make_tuple({values});")
 
 
 @register_codegen(CudaTarget, Role.EMIT, TupleGetItem)
 def _emit(let_stmt, ctx: CudaCodegenContext) -> None:
-    call = let_stmt.value
-    held, index = call.args
-    if isinstance(held, Var):
-        held = ctx.tuple_for(held)
-    if not isinstance(held, Tuple):
-        raise ValueError("CUDA TupleGetItem requires a tuple value")
-    result = ctx.name_for(let_stmt.var)
+    tuple_var, index = let_stmt.value.args
+    held, result = ctx.name_for(tuple_var), ctx.name_for(let_stmt.var)
     if isinstance(index, Constant):
-        ctx.emit(f"auto {result} = {_value(held.elements[constant_index(index)], ctx)};")
+        ctx.emit(f"auto {result} = cute::get<{_constant_index(index)}>({held});")
         return
-    rendered = tuple(_value(element, ctx) for element in held.elements)
-    ctx.emit(f"auto {result} = {render_tuple_choice(rendered, index, ctx)};")
+    ctx.emit(f"auto {result} = {held}[{_index(index, ctx)}];")

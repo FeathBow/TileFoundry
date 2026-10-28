@@ -54,20 +54,12 @@ class CudaCodegenContext(EmitContext):
   - Handlers obtain target type spellings and hardware counters through the
     context rather than rediscovering them from IR.
 
-CUDA value emission lowers `TupleGetItem` according to its index form. A constant
-index names the selected tuple element directly. A dynamic index requires the
-homogeneous tuple established by type inference and emits
-`cute::array{a, b, c}[index]`; dimension arithmetic in the index remains runtime
-C++ arithmetic.
-
-An IR `Tuple` is structural and has no target-side storage. A `LetStmt` binding
-one emits no C++ variable and continues with its body; its authored name (for
-example `lhs_stages`) therefore does not appear in generated C++. Each dynamic
-`TupleGetItem` use constructs its own `cute::array`, so indexing the same tuple
-N times constructs N arrays. Constant selection remains valid for heterogeneous
-tuples because it does not materialize an aggregate. The codegen context records
-the structural tuple by its fresh SSA `Var` identity so consumers can recover
-its elements without target-side storage.
+Every `LetStmt` binding a `Tuple` declares one C++ variable:
+`cute::array<decltype(e0), N>` when the elements share one type, otherwise
+`cute::make_tuple(e0, ...)`. A constant `TupleGetItem` reads `cute::get<i>(t)`;
+a dynamic one reads `t[i]` and requires the homogeneous tuple. The variable
+holds element values at binding time: views still alias their original storage,
+while owning register tensors are copied.
 
 CUDA emits `CopyAsyncBulk` and `LdMatrix` as the uniform runtime calls
 `tilefoundry::ops::copy_async_bulk(...)` and
@@ -105,6 +97,10 @@ there is no umbrella header or target-selection macro.
     it MUST NOT rebuild function paths independently.
 
 ## 5. HIR skeletons
+
+Skeleton emission MUST reject an HIR device call into a direct child's function
+with implicit ConstTensor arguments, naming caller, callee and omitted weights
+and requesting explicit weight parameters or orchestration calls.
 
 `tilefoundry_nvidia/cuda/codegen/hir/function.py` owns HIR skeleton emission. An HIR function
 enters codegen only as the callee a `Launch` names; Python wraps any other
