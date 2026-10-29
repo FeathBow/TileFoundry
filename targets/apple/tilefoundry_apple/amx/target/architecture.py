@@ -1,6 +1,6 @@
 """Apple AMX compilation capabilities.
 
-Every value is built from the installed ``apple.amx`` document; this module
+Every value is built from an installed AMX architecture document; this module
 holds the shape of an AMX architecture value, never a copy of its numbers.
 """
 
@@ -23,7 +23,6 @@ class AppleAmx(Architecture):
     name: str
     supported_compute_dtypes: tuple[DType, ...]
     capabilities: tuple[str, ...]
-    amx_units_per_core: int
     staging_bytes: int
     accumulator_bytes: int
     rmem_owner: str
@@ -32,11 +31,6 @@ class AppleAmx(Architecture):
         """Return whether AMX has a compute instruction for ``dtype``."""
         return dtype in self.supported_compute_dtypes
 
-    def topology_limit(self, name: str) -> int:
-        """Return the structural limit for an AMX topology level."""
-        if name == "amx":
-            return self.amx_units_per_core
-        raise ValueError(f"{self.name}: no architecture limit for topology level {name!r}")
 
 
 __all__ = ["AppleAmx"]

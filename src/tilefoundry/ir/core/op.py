@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from tilefoundry.ir.core.param_def import ParamDef, _ParamKind, collect_param_defs
+from tilefoundry.ir.core.register import get_registered_name
 from tilefoundry.ir.types.storage import resolve_storage
 
 
@@ -23,7 +24,7 @@ def _signature(cls: type) -> tuple[ParamDef, ...]:
     ``signature`` when ``@register_op`` has run, else a fresh reflection
     walk (e.g. an unregistered test fixture subclassing ``Op`` directly).
     """
-    schema = getattr(cls, "_op_schema", None)
+    schema = vars(cls).get("_op_schema")
     if schema is not None:
         return schema.signature
     return collect_param_defs(cls)
@@ -55,7 +56,8 @@ class ParameterInfo:
 class OpCapability:
     """One target capability exposed by a registered instruction Op.
 
-    ``name=None`` means that every target admits the instruction.  A carrier
+    ``name=None`` imposes no named capability requirement; the target must still
+    satisfy the instruction's execution mesh Pattern at each call. A carrier
     with several concrete declarations lists one record per variant; the
     declaration and attribute say how an instance of that declaration is bound
     back to the carrier without teaching registry consumers about its shape.
@@ -68,15 +70,6 @@ class OpCapability:
     def __post_init__(self) -> None:
         if (self.declaration is None) != (self.attribute is None):
             raise ValueError("a capability variant states both declaration and attribute")
-
-
-def op_identifier(op_type: type) -> str:
-    """Return the registered or externally declared name of an Op."""
-    reference = getattr(op_type, "reference_name", "")
-    if reference:
-        return reference
-    schema = op_type._op_schema
-    return f"{schema.dialect}.{schema.name}"
 
 
 def capabilities_of(op_type: type) -> tuple[OpCapability, ...]:
@@ -92,7 +85,7 @@ def capabilities_of(op_type: type) -> tuple[OpCapability, ...]:
         return stated
     if stated is None:
         return ()
-    raise ValueError(f"{op_identifier(op_type)} has an invalid op capability declaration")
+    raise ValueError(f"{get_registered_name(op_type)} has an invalid op capability declaration")
 
 
 def target_capabilities(target: object) -> frozenset[str]:
@@ -100,9 +93,8 @@ def target_capabilities(target: object) -> frozenset[str]:
     architecture = getattr(target, "architecture", None)
     return frozenset(getattr(architecture, "capabilities", ()))
 
-
 def supported_op_capabilities(target: object) -> tuple[tuple[type, OpCapability], ...]:
-    """Enumerate registered TIR Ops admitted by ``target`` in registry order."""
+    """Enumerate TIR variants admitted by target capabilities."""
     from tilefoundry.ir.core.op_registry import iter_schemas  # noqa: PLC0415
 
     supported = target_capabilities(target)
@@ -111,7 +103,7 @@ def supported_op_capabilities(target: object) -> tuple[tuple[type, OpCapability]
         for schema in iter_schemas()
         if schema.dialect == "T" and schema.op_class is not None
         for capability in capabilities_of(schema.op_class)
-        if capability.name is None or capability.name in supported
+        if (capability.name is None or capability.name in supported)
     )
 
 
@@ -119,6 +111,8 @@ class Op:
     """All Op classes inherit from this. Reflection-based param discovery."""
 
     _params_cache: ClassVar[dict[type, list[ParameterInfo]]] = {}
+
+
 
     def __new__(cls, **attrs: Any):
 
@@ -181,7 +175,6 @@ __all__ = [
     "OpCapability",
     "ParameterInfo",
     "capabilities_of",
-    "op_identifier",
     "supported_op_capabilities",
     "target_capabilities",
 ]

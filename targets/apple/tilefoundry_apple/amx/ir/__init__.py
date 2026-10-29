@@ -1,3 +1,4 @@
-"""Load Apple AMX instruction registrations."""
+"""Load AMX HIR and TIR registrations."""
 
-from tilefoundry_apple.amx.ir.tir import instructions as _instructions  # noqa: F401
+from . import tir as tir
+from .hir import cast as _cast  # noqa: F401

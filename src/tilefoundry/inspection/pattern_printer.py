@@ -7,7 +7,8 @@ from enum import Enum
 
 from tilefoundry.ir.clause.layout import is_layout_wildcard
 from tilefoundry.ir.core.param_def import collect_param_defs
-from tilefoundry.ir.pattern.pattern import Pattern
+from tilefoundry.ir.core.register import get_registered_name
+from tilefoundry.ir.pattern.pattern import Pattern, WildcardPattern
 from tilefoundry.ir.pattern.predicates import Formula, failing
 from tilefoundry.ir.pattern.utils import declared_execution_mesh
 from tilefoundry.ir.types import Broadcast, DType, Split, StorageKind
@@ -28,7 +29,6 @@ _BINARY_OPERATORS = {
     "mod": ("%", 5),
 }
 
-
 class PatternPrinter:
     """Render pattern trees without a Python print context."""
 
@@ -46,7 +46,7 @@ class PatternPrinter:
             dict.fromkeys(
                 (
                     *self._dispatch("rules", pattern, name),
-                    *self._rules_of(pattern.predicates, name),
+                    *self._rules_of(pattern.predicates, name, predicates=True),
                 )
             )
         )
@@ -54,13 +54,18 @@ class PatternPrinter:
 
     def described(self, pattern, name: str = _UNNAMED) -> str:
         """Write a value shape followed by its predicate lines, when present."""
-        return self._described(self.written(pattern, name), self.rules(pattern, name))
+        written, rules = self.written(pattern, name), self.rules(pattern, name)
+        if rules and all("\n" not in line for line in (written, *rules)):
+            return written + " where " + "; ".join(rules)
+        return self._described(written, rules)
 
     @staticmethod
     def _described(written: str, rules: tuple[str, ...]) -> str:
         if not rules:
             return written
-        return "\n".join((written, "  predicates:", *(f"    {rule}" for rule in rules)))
+        return "\n".join((written, "  predicates:", *(
+            f"    {line}" for rule in rules for line in rule.splitlines()
+        )))
 
     def alternatives(self, pattern, bindings=()) -> tuple:
         """Flatten declaration branches into ``(bindings, leaf)`` pairs."""
@@ -136,7 +141,7 @@ class PatternPrinter:
         )
 
     def declaration(self, op_type) -> dict[str, tuple[str, ...]]:
-        """Render declaration sections without flattening them into report text."""
+        """Render the declaration directly, retaining symbolic conditions."""
         sections = []
         parameters = tuple(getattr(op_type, "parameters", ())) or collect_param_defs(op_type)
         parameters_by_name = {param.name: param for param in parameters}
@@ -159,12 +164,12 @@ class PatternPrinter:
             operands = tuple(
                 (param.name, param.pattern)
                 for param in parameters
-                if param.kind == "input" and param.pattern is not None
+                if param.kind == "input"
             )
             attributes = tuple(
                 (param.name, param.pattern)
                 for param in parameters
-                if param.kind == "attribute" and param.pattern is not None
+                if param.kind == "attribute"
             )
             sections = [
                 (heading, items)
@@ -177,8 +182,22 @@ class PatternPrinter:
             lines = []
             width = max((len(name) for name, _ in items), default=0)
             for name, pattern in items:
-                described = self._declared(pattern, name).splitlines()
                 parameter = parameters_by_name.get(name)
+                description = "any value" if pattern is None else self.described(pattern, name)
+                qualifier = ""
+                if parameter is not None:
+                    annotation = parameter.annotation
+                    if isinstance(annotation, type) and issubclass(annotation, Enum):
+                        if pattern is None or isinstance(pattern, WildcardPattern):
+                            qualifier += " in {" + ", ".join(
+                                self._written_value(value) for value in annotation
+                            ) + "}"
+                    elif annotation is not object:
+                        qualifier += f" (type {getattr(annotation, '__name__', annotation)})"
+                    if parameter.optional:
+                        qualifier += " or None"
+                described = description.splitlines()
+                described[0] += qualifier
                 default = ""
                 if parameter is not None and parameter.has_default:
                     default = f" (default {self._written_value(parameter.default)})"
@@ -189,36 +208,6 @@ class PatternPrinter:
             rendered[heading] = tuple(lines)
         return rendered
 
-    def _declared(self, pattern, name: str) -> str:
-        if not any(cls.__name__ in ("SwitchPattern", "TensorPattern") for cls in type(pattern).__mro__):
-            return self.described(pattern, name)
-        alternatives = tuple(
-            (bindings, alternative, self.rules(alternative, name))
-            for bindings, alternative in self.alternatives(pattern)
-        )
-        if not alternatives:
-            return self.described(pattern, name)
-        if len(alternatives) == 1 and not alternatives[0][0]:
-            return self.described(pattern, name)
-        common = tuple(
-            rule
-            for rule in alternatives[0][2]
-            if all(rule in rules for _, _, rules in alternatives[1:])
-        )
-        held = []
-        for bindings, alternative, rules in alternatives:
-            written = self.written(alternative, name)
-            specific = tuple(rule for rule in rules if rule not in common)
-            if written == name and len(specific) == 1:
-                written, specific = specific[0], ()
-            held.append(
-                (
-                    self._written_bindings(bindings),
-                    self._described(written, specific),
-                )
-            )
-        return self._described(self._aligned_alternatives(tuple(held)), common)
-
     def _dispatch(self, operation: str, pattern: Pattern, argument):
         for cls in type(pattern).__mro__:
             visitor = getattr(self, f"{operation}_{cls.__name__}", None)
@@ -227,18 +216,6 @@ class PatternPrinter:
         raise NotImplementedError(
             f"{type(pattern).__name__} has no PatternPrinter {operation} visitor"
         )
-
-    @staticmethod
-    def _named(value) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, Enum):
-            return f"{type(value).__name__}.{value.name}"
-        return getattr(value, "name", str(value)).lower()
-
-    @staticmethod
-    def _field_name(value) -> str | None:
-        return None if value is None else getattr(value, "name", str(value)).lower()
 
     def _written_dim(self, value) -> str:
         if isinstance(value, DimVar):
@@ -264,7 +241,10 @@ class PatternPrinter:
         if isinstance(value, StorageKind):
             return value.name.lower()
         if isinstance(value, Enum):
-            return f"{type(value).__name__}.{value.name}"
+            try:
+                return f"{get_registered_name(value)}.{value.name}"
+            except ValueError:
+                return f"{type(value).__name__}.{value.name}"
         if isinstance(value, tuple):
             return self._written_tuple(tuple(self._written_value(item) for item in value))
         if isinstance(value, list):
@@ -283,69 +263,23 @@ class PatternPrinter:
             return self._written_tuple(tuple(self._written_grouped(mode) for mode in modes))
         return self.written(modes)
 
-    def _written_bindings(self, bindings) -> str:
-        return ", ".join(
-            f"{name}={getattr(value, 'name', str(value))}" for name, value in bindings
-        )
-
-    def _written_alternatives(self, items, name: str = _UNNAMED) -> str:
-        held = tuple(
-            (self._written_bindings(bindings), self.written(alternative, name))
-            for bindings, alternative in items
-        )
-        return self._aligned_alternatives(held)
-
-    @staticmethod
-    def _aligned_alternatives(held) -> str:
-        width = max((len(label) for label, _ in held), default=0)
+    def _rules_of(self, values, name: str = _UNNAMED, *, predicates=False) -> tuple[str, ...]:
         lines = []
-        for label, written in held:
-            first, *rest = written.splitlines() or ("",)
-            lines.append(first if not width else f"{label.ljust(width)}  {first}")
-            lines.extend(
-                line if not width else f"{' ' * (width + 2)}{line}" for line in rest
-            )
-        return "\n".join(lines)
+        for value in values:
+            if not predicates:
+                lines.extend(self.rules(value, name))
+            elif isinstance(value, Pattern):
+                lines.extend(self._dispatch("predicate", value, name))
+            else:
+                lines.append(f"{name} == {self._written_value(value)}")
+        return tuple(lines)
 
-    def _rules_of(self, values, name: str = _UNNAMED) -> tuple[str, ...]:
-        return tuple(
-            line
-            for value in values
-            if isinstance(value, Pattern)
-            for line in self.rules(value, name)
-        )
+    def predicate_Pattern(self, pattern, name) -> tuple[str, ...]:
+        return self.rules(pattern, name)
 
-    def _alternative_rules(self, pattern, name: str = _UNNAMED) -> tuple[str, ...]:
-        alternatives, common = self._partitioned_alternatives(pattern, name)
-        if not alternatives:
-            return ()
-        specific = tuple(
-            self._qualified_rule(rule, bindings)
-            for bindings, _, rules in alternatives
-            for rule in rules
-            if rule not in common
-        )
-        return (*common, *specific)
-
-    def _partitioned_alternatives(self, pattern, name: str = _UNNAMED) -> tuple:
-        alternatives = tuple(
-            (bindings, alternative, self.rules(alternative, name))
-            for bindings, alternative in self.alternatives(pattern)
-        )
-        if not alternatives:
-            return (), ()
-        common = tuple(
-            rule
-            for rule in alternatives[0][2]
-            if all(rule in rules for _, _, rules in alternatives[1:])
-        )
-        return alternatives, common
-
-    def _qualified_rule(self, rule: str, bindings) -> str:
-        label = self._written_bindings(bindings)
-        if not label:
-            return rule
-        return f"{rule}, {label}" if " where " in rule else f"{rule} where {label}"
+    def predicate_WildcardPattern(self, pattern, name) -> tuple[str, ...]:
+        binding = (f"{name} matches {pattern.name or 'any value'}",) if pattern.name != name else ()
+        return (*binding, *self.rules(pattern, name))
 
     def visit_WildcardPattern(self, pattern, name) -> str:
         return "any value" if pattern.name == name else pattern.name or name
@@ -360,21 +294,21 @@ class PatternPrinter:
         return self.rules(pattern.pattern, name)
 
     def visit_OrPattern(self, pattern, name) -> str:
-        if not any(isinstance(item, Pattern) for item in pattern.patterns):
-            return name
-        return self._written_alternatives(self.alternatives(pattern), name)
+        return "one of {" + "; ".join(
+            self.described(item, name) for item in pattern.patterns
+        ) + "}"
 
     def rules_OrPattern(self, pattern, name) -> tuple[str, ...]:
-        if not any(isinstance(item, Pattern) for item in pattern.patterns):
-            values = ", ".join(self._named(value) for value in pattern.patterns)
-            return (f"{name} in {{{values}}}",)
-        return self._alternative_rules(pattern, name)
+        return ()
+
+    def predicate_OrPattern(self, pattern, name) -> tuple[str, ...]:
+        return (self.described(pattern, name),)
 
     def visit_AndPattern(self, pattern, name) -> str:
-        return name
+        return " and ".join(self.described(part, name) for part in pattern.parts)
 
     def rules_AndPattern(self, pattern, name) -> tuple[str, ...]:
-        return self._rules_of(pattern.parts, name)
+        return ()
 
     def visit_SequencePattern(self, pattern, name) -> str:
         return self._written_tuple(tuple(self.written(item, name) for item in pattern.patterns))
@@ -393,10 +327,18 @@ class PatternPrinter:
         return (f"{pattern.lo} <= {name} <= {pattern.hi}",)
 
     def visit_SwitchPattern(self, pattern, name) -> str:
-        return self._written_alternatives(self.alternatives(pattern), name)
+        branches = []
+        for value, branch in pattern.branches:
+            lines = self.described(branch, name).splitlines()
+            branches.append(f"  {pattern.param}={self._written_value(value)}: {lines[0]}")
+            branches.extend(f"    {line}" for line in lines[1:])
+        return "\n".join((f"switch {pattern.param}:", *branches))
 
     def rules_SwitchPattern(self, pattern, name) -> tuple[str, ...]:
-        return self._alternative_rules(pattern, name)
+        return ()
+
+    def predicate_SwitchPattern(self, pattern, name) -> tuple[str, ...]:
+        return (self.described(pattern, name),)
 
     def visit_LayoutPattern(self, pattern, name) -> str:
         if pattern.shape is None and pattern.strides is None:
@@ -446,48 +388,29 @@ class PatternPrinter:
         return (f"{name} has rank > 0",)
 
     def visit_TensorPattern(self, pattern, name) -> str:
-        stated = []
-        if pattern.shape is not None:
-            stated.append(
-                "shape=" + self._written_tuple(tuple(self.written(item) for item in pattern.shape))
+        fields = []
+        for field in ("shape", "dtype", "storage", "layout"):
+            value = getattr(pattern, field)
+            if value is None:
+                continue
+            written = (
+                self._written_tuple(tuple(
+                    self.described(item, f"{name}.shape[{index}]")
+                    for index, item in enumerate(value)
+                ))
+                if field == "shape" else self.described(value, f"{name}.{field}")
             )
-        if pattern.dtype is not None:
-            stated.append(f"dtype={self._field_name(pattern.dtype)}")
-        if pattern.storage is not None:
-            stated.append(f"storage={self._field_name(pattern.storage)}")
-        head = " ".join(stated) if stated else "any tensor"
+            lines = written.splitlines()
+            fields.append(f"  {field}={lines[0]}")
+            fields.extend(f"    {line}" for line in lines[1:])
         if pattern.layout is None:
-            return f"{head}, in any arrangement"
-        alternatives, common = self._partitioned_alternatives(pattern.layout)
-        label = f"{len(alternatives)} arrangement{'' if len(alternatives) == 1 else 's'}:"
-        items = tuple(
-            (
-                self._written_bindings(bindings),
-                self._described(
-                    self.written(alternative),
-                    tuple(rule for rule in rules if rule not in common),
-                ),
-            )
-            for bindings, alternative, rules in alternatives
-        )
-        written = self._aligned_alternatives(items).splitlines()
-        return "\n".join((f"{head}, held in {label}", *(f"  {line}" for line in written)))
+            fields.append("  layout=any arrangement")
+        if all("\n" not in line for line in fields) and all(not line.startswith("    ") for line in fields):
+            return "Tensor(" + ", ".join(line.strip() for line in fields) + ")"
+        return "\n".join(("Tensor:", *fields))
 
     def rules_TensorPattern(self, pattern, name) -> tuple[str, ...]:
-        values = (
-            pattern.dtype,
-            pattern.storage,
-            *(pattern.shape or ()),
-        )
-        layout_rules = (
-            ()
-            if pattern.layout is None
-            else self._partitioned_alternatives(pattern.layout)[1]
-        )
-        return (
-            *self._rules_of(values),
-            *layout_rules,
-        )
+        return ()
 
     def visit_ShardLayoutPattern(self, pattern, name) -> str:
         attrs = (
@@ -504,7 +427,7 @@ class PatternPrinter:
         return self._rules_of((pattern.layout, pattern.attrs, pattern.mesh))
 
     def visit_AtomPattern(self, pattern, name) -> str:
-        return "one of " + ", ".join(item.reference_name for item in pattern.declarations)
+        return "one of " + ", ".join(get_registered_name(item) for item in pattern.declarations)
 
     def rules_AtomPattern(self, pattern, name) -> tuple[str, ...]:
         return ()
@@ -608,11 +531,11 @@ class PatternPrinter:
             if value.op == "bound":
                 return f"x{value.args[0]}"
             if value.op == "element":
-                return f"{value.args[0]!r}[{self._written_expression(value.args[1])}]"
+                return f"{self._written_value(value.args[0])}[{self._written_expression(value.args[1])}]"
             if value.op in {"sum", "count"}:
                 return f"{value.op.title()}({self._written_expression(value.args[0])})"
             return self._written_binary(value, parent)
-        return repr(value)
+        return self._written_value(value) if isinstance(value, (DType, StorageKind, Enum, tuple)) else repr(value)
 
     def _written_binary(self, value, parent):
         symbol, precedence = _BINARY_OPERATORS[value.op]
@@ -677,6 +600,5 @@ class PatternPrinter:
             (held, replace(pattern, layout=alternative))
             for held, alternative in self.alternatives(pattern.layout, bindings)
         )
-
 
 __all__ = ["PatternPrinter"]
